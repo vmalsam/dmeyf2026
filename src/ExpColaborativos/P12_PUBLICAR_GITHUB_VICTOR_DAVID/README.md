@@ -38,4 +38,20 @@ El Rmd localiza automáticamente las carpetas `90_RESULTADOS` y `91_ANALISIS` y 
 ## Alcance de este paquete
 
 Este repositorio publica los resultados consolidados y el análisis final.  
-No incluye los scripts auxiliares de automatización, exportación ni los notebooks completos utilizados para ejecutar las corridas originales.
+Se incluye una semilla completa como ejemplo de ejecución. No se publican los notebooks de las restantes semillas ni los scripts auxiliares de automatización y exportación.
+
+## Notebooks de ejecución
+
+Para evitar duplicar notebooks con la misma estructura de ejecución, se incluye como ejemplo completo la **SEM1 (semilla 198427)** en los cinco escenarios del experimento:
+
+- **B100** — Baseline 100%
+- **U040** — Undersampling 40%
+- **U010** — Undersampling 10%
+- **U005** — Undersampling 5%
+- **U001** — Undersampling 1%
+
+Estos notebooks permiten observar el procedimiento utilizado para ejecutar cada escenario, entrenar el modelo y generar los resultados.
+
+El experimento completo fue realizado sobre **12 semillas (SEM1–SEM12)**. Los resultados consolidados de todas las semillas se encuentran en `90_RESULTADOS/`, mientras que los parámetros y registros de cada corrida se encuentran en `PARAMS_CORRIDAS/`.
+
+Los notebooks restantes no se incluyen para evitar redundancia, dado que corresponden a la repetición del mismo procedimiento experimental sobre las demás semillas.
