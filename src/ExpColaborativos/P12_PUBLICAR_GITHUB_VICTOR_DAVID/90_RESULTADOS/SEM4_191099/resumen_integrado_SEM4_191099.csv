@@ -1,0 +1,6 @@
+escenario_codigo,escenario,semilla,corte_maximo,ganancia_maxima,cantidad_empates,AUC,num_leaves,min_data_in_leaf,num_iterations,training_antes,training_despues,positivos_antes,positivos_despues,negativos_antes,negativos_despues,porcentaje_real_conservado,duracion_minutos,param_yml
+B100,100%,191099,950,19.821,1,0.9528777,128.0,512.0,611,179449,179449,1673,1673,177776,177776,100.0,13.86,/home/ds/buckets/b1/exp/WFP12_B100_S191099/PARAM.yml
+U040,40%,191099,1250,22.236,1,0.9525962,128.0,64.0,1124,179449,72876,1673,1673,177776,71203,40.611,12.0,/home/ds/buckets/b1/exp/WFP12_U040_S191099/PARAM.yml
+U010,10%,191099,1050,20.82,1,0.9496553,128.0,64.0,671,179449,19667,1673,1673,177776,17994,10.9597,8.31,/home/ds/buckets/b1/exp/WFP12_U010_S191099/PARAM.yml
+U005,5%,191099,800,21.07,1,0.947067,64.0,64.0,558,179449,10696,1673,1673,177776,9023,5.9605,7.68,/home/ds/buckets/b1/exp/WFP12_U005_S191099/PARAM.yml
+U001,1%,191099,1050,20.487,1,0.9385181,64.0,64.0,834,179449,3483,1673,1673,177776,1810,1.9409,7.08,/home/ds/buckets/b1/exp/WFP12_U001_S191099/PARAM.yml

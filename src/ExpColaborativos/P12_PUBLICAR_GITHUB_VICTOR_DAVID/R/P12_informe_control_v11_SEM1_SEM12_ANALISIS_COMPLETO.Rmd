@@ -1,0 +1,3286 @@
+---
+title: "P12 - Informe de Control y Análisis"
+subtitle: "Estabilidad del modelo predictivo frente al Undersampling"
+author: "Victor Malsam - David Torres"
+date: "`r format(Sys.Date(), '%d/%m/%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+  word_document:
+    toc: true
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+options(stringsAsFactors = FALSE, scipen = 999)
+
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 9,
+  fig.height = 5.5
+)
+
+buscar_raiz_p12 <- function(inicio = getwd(), max_niveles = 8) {
+  actual <- normalizePath(inicio, winslash = "/", mustWork = TRUE)
+
+  for (i in 0:max_niveles) {
+    if (
+      dir.exists(file.path(actual, "90_RESULTADOS")) &&
+      dir.exists(file.path(actual, "91_ANALISIS"))
+    ) {
+      return(actual)
+    }
+
+    padre <- dirname(actual)
+    if (padre == actual) break
+    actual <- padre
+  }
+
+  stop(
+    "No pude encontrar P12_ANALISIS_GLOBAL. Ejecutá el Rmd desde esa carpeta o desde su subcarpeta R."
+  )
+}
+
+RAIZ <- buscar_raiz_p12()
+
+DIR_RESULTADOS <- file.path(RAIZ, "90_RESULTADOS")
+DIR_ANALISIS   <- file.path(RAIZ, "91_ANALISIS")
+DIR_GLOBAL     <- file.path(DIR_ANALISIS, "00_GLOBAL")
+DIR_PARAMS     <- file.path(RAIZ, "PARAMS_CORRIDAS")
+DIR_GRAFICOS   <- file.path(DIR_GLOBAL, "GRAFICOS")
+
+dir.create(DIR_GLOBAL, recursive = TRUE, showWarnings = FALSE)
+dir.create(DIR_GRAFICOS, recursive = TRUE, showWarnings = FALSE)
+
+
+# ------------------------------------------------------------
+# COLORES DEL INFORME
+# ------------------------------------------------------------
+# Se usan colores consistentes para que una misma semilla tenga
+# siempre el mismo color en todos los gráficos.
+#
+# La paleta define 10 colores base y, si hay más semillas,
+# genera automáticamente colores adicionales.
+PALETA_SEMILLAS <- c(
+  "#0072B2",  # azul
+  "#D55E00",  # rojo/naranja
+  "#009E73",  # verde
+  "#CC79A7",  # violeta/rosa
+  "#E69F00",  # naranja
+  "#56B4E9",  # celeste
+  "#7B2CBF",  # violeta
+  "#8C564B",  # marrón
+  "#2F4F4F",  # gris oscuro
+  "#F0E442"   # amarillo
+)
+
+# Colores fijos por escenario.
+PALETA_ESCENARIOS <- c(
+  B100 = "#4D4D4D",
+  U040 = "#0072B2",
+  U010 = "#009E73",
+  U005 = "#E69F00",
+  U001 = "#CC79A7"
+)
+
+colores_por_semilla <- function(seeds) {
+
+  seeds <- sort(unique(as.integer(seeds)))
+
+  if (length(seeds) > length(PALETA_SEMILLAS)) {
+    extras <- grDevices::hcl.colors(
+      length(seeds) - length(PALETA_SEMILLAS),
+      palette = "Dark 3"
+    )
+
+    paleta <- c(PALETA_SEMILLAS, extras)
+  } else {
+    paleta <- PALETA_SEMILLAS
+  }
+
+  setNames(
+    paleta[seq_along(seeds)],
+    as.character(seeds)
+  )
+}
+
+orden_codigos <- c("B100", "U040", "U010", "U005", "U001")
+orden_escenarios <- c("100%", "40%", "10%", "5%", "1%")
+
+codigo_por_escenario <- c(
+  "100%" = "B100",
+  "40%"  = "U040",
+  "10%"  = "U010",
+  "5%"   = "U005",
+  "1%"   = "U001"
+)
+
+training_pct_por_codigo <- c(
+  B100 = 1.00,
+  U040 = 0.40,
+  U010 = 0.10,
+  U005 = 0.05,
+  U001 = 0.01
+)
+
+# ------------------------------------------------------------
+# PLAN DE SEMILLAS
+# ------------------------------------------------------------
+# Se integran 12 semillas en un único análisis (SEM1..SEM12).
+# La columna "ejecutado_por" conserva únicamente la trazabilidad de quién
+# ejecutó cada semilla; NO es una variable experimental.
+plan_semillas <- data.frame(
+  sem_nro = 1:12,
+  semilla = c(
+    198427,
+    955939,
+    602257,
+    191099,
+    895651,
+    683731,
+    742801,
+    119993,
+    299993,
+    480013,
+    659999,
+    839999
+  ),
+  ejecutado_por = c(
+    rep("Victor", 7),
+    rep("David", 5)
+  ),
+  stringsAsFactors = FALSE
+)
+
+extraer_sem_y_seed <- function(texto) {
+  m <- regexec("SEM([0-9]+)_([0-9]+)", basename(texto))
+  partes <- regmatches(basename(texto), m)[[1]]
+
+  if (length(partes) != 3) {
+    return(list(sem_nro = NA_integer_, semilla = NA_integer_))
+  }
+
+  list(
+    sem_nro = as.integer(partes[2]),
+    semilla = as.integer(partes[3])
+  )
+}
+
+autor_semilla <- function(seed) {
+  idx <- match(as.integer(seed), plan_semillas$semilla)
+  if (is.na(idx)) return("SIN_ASIGNAR")
+  plan_semillas$ejecutado_por[idx]
+}
+
+sem_nro_seed <- function(seed, sugerido = NA_integer_) {
+  idx <- match(as.integer(seed), plan_semillas$semilla)
+  if (!is.na(idx)) return(plan_semillas$sem_nro[idx])
+  sugerido
+}
+```
+
+# Para qué sirve este documento {.unnumbered}
+
+Este es **nuestro informe interno de control y comprensión del P12**. No es la presentación de YouTube ni pretende volver a ejecutar el experimento.
+
+El trabajo pesado sigue ocurriendo donde corresponde:
+
+```text
+Jupyter + LightGBM + Grid Search + Kaggle
+                  |
+                  v
+            scripts Python
+                  |
+                  v
+             90_RESULTADOS
+                  |
+                  v
+      ESTE INFORME R MARKDOWN
+                  |
+                  v
+        tablas + gráficos + control
+```
+
+La idea es simple: **cada vez que aparezcan nuevos resultados consolidados en `90_RESULTADOS`, hacemos Knit nuevamente y el informe se actualiza solo**.
+
+El documento no vuelve a calcular el score de Kaggle ni modifica notebooks, modelos, parámetros o submissions.
+
+# Pregunta del experimento
+
+El Problema #12 estudia:
+
+> **¿Hasta cuánto podemos reducir los registros utilizados mediante undersampling sin deteriorar de manera relevante el comportamiento predictivo y económico del modelo?**
+
+Los cinco escenarios son:
+
+| Código | Escenario | Interpretación |
+|---|---:|---|
+| B100 | 100% | Baseline |
+| U040 | 40% | Conserva aproximadamente 40% de CONTINUA |
+| U010 | 10% | Conserva aproximadamente 10% de CONTINUA |
+| U005 | 5% | Conserva aproximadamente 5% de CONTINUA |
+| U001 | 1% | Conserva aproximadamente 1% de CONTINUA |
+
+**BAJA+1 y BAJA+2 se conservan completas.** El porcentaje de undersampling se aplica sobre la clase CONTINUA; por eso el porcentaje real total conservado queda algo por encima del porcentaje nominal.
+
+Las distintas semillas son **réplicas del mismo experimento**. Victor y David no representan experimentos distintos: las semillas de ambos **ya están integradas en un único análisis SEM1..SEM12**.
+
+# De dónde sale realmente cada dato
+
+Esta sección es importante porque queremos poder volver dentro de varios días y saber **qué produjo cada número y qué archivo lo contiene**.
+
+La idea central es:
+
+> **El notebook `.ipynb` NO genera directamente la tabla maestra ni los gráficos globales.**
+
+El notebook ejecuta el experimento de una combinación:
+
+```text
+SEMILLA + ESCENARIO
+```
+
+y deja dos fuentes fundamentales:
+
+```text
+1. PARAM.yml
+2. archivos de submission para Kaggle
+```
+
+Después, los scripts Python consultan Kaggle, consolidan los resultados y construyen los CSV de `90_RESULTADOS`.
+
+Finalmente, este R Markdown toma esos CSV ya consolidados y genera nuestro informe global en `91_ANALISIS/00_GLOBAL`.
+
+El recorrido completo es:
+
+```text
+NOTEBOOK .ipynb
+      |
+      |-- PARAM.yml
+      |
+      |-- kaggle/KAP12_..._800.csv
+      |-- kaggle/KAP12_..._850.csv
+      |-- ...
+      |-- kaggle/KAP12_..._1300.csv
+      |
+      v
+KAGGLE calcula Public Score
+      |
+      v
+SCRIPTS PYTHON p12_01 ... p12_04
+      |
+      v
+90_RESULTADOS/
+      |
+      v
+P12_informe_control.Rmd
+      |
+      v
+91_ANALISIS/00_GLOBAL/
+```
+
+## Qué parte del notebook define el escenario y la semilla
+
+En la celda de configuración del notebook se define la réplica que estamos ejecutando.
+
+Ejemplo:
+
+```r
+P12_SEMILLA <- 198427
+
+P12_ESCENARIO <- "BASELINE_100"
+P12_TRAINING_PCT <- 1.00
+P12_CODIGO_ESCENARIO <- "B100"
+
+PARAM$semilla_primigenia <- P12_SEMILLA
+PARAM$experimento <- paste0(
+  "P12_",
+  P12_CODIGO_ESCENARIO,
+  "_S",
+  P12_SEMILLA
+)
+```
+
+Para el P12, lo que cambia entre escenarios es principalmente:
+
+```text
+P12_TRAINING_PCT
+```
+
+con los valores:
+
+```text
+1.00
+0.40
+0.10
+0.05
+0.01
+```
+
+La semilla cambia entre réplicas.
+
+---
+
+## Qué parte del notebook aplica el undersampling
+
+En la sección **Training Strategy** el notebook lleva el porcentaje del escenario a:
+
+```r
+PARAM$trainingstrategy$training_pct <- P12_TRAINING_PCT
+```
+
+Luego se construye `fold_train`.
+
+El bloque fundamental es:
+
+```r
+set.seed(
+  PARAM$semilla_primigenia,
+  kind = "L'Ecuyer-CMRG"
+)
+
+dataset[, azar := runif(nrow(dataset))]
+
+dataset[
+  ,
+  fold_train :=
+    foto_mes %in% PARAM$trainingstrategy$training &
+    (
+      clase_ternaria %in% c("BAJA+1", "BAJA+2") |
+      azar < PARAM$trainingstrategy$training_pct
+    )
+]
+```
+
+Este es el punto concreto donde se produce el undersampling.
+
+Interpretación:
+
+```text
+BAJA+1 y BAJA+2  -> se conservan
+CONTINUA         -> queda según training_pct
+```
+
+Por eso un escenario `10%` significa aproximadamente **10% de CONTINUA**, no 10% de todo el dataset.
+
+---
+
+## Qué parte del notebook cuenta los registros antes y después
+
+Inmediatamente después de crear `fold_train`, nuestras versiones finales del notebook guardan el efecto real del undersampling dentro de:
+
+```r
+PARAM$p12$registros
+```
+
+El bloque contiene, entre otros:
+
+```r
+PARAM$p12$registros$training_antes <- dataset[
+  foto_mes %in% PARAM$trainingstrategy$training,
+  .N
+]
+
+PARAM$p12$registros$training_despues <- dataset[
+  fold_train == TRUE,
+  .N
+]
+
+PARAM$p12$registros$porcentaje_real_conservado <- round(
+  100 *
+  PARAM$p12$registros$training_despues /
+  PARAM$p12$registros$training_antes,
+  4
+)
+```
+
+También quedan registrados:
+
+```text
+positivos_antes
+positivos_despues
+negativos_antes
+negativos_despues
+```
+
+Estos datos después llegan al `PARAM.yml`.
+
+---
+
+## Qué parte del notebook calcula AUC y busca los hiperparámetros
+
+El notebook define primero los parámetros fijos de LightGBM.
+
+Entre ellos:
+
+```r
+max_bin = 31
+learning_rate = 0.03
+feature_fraction = 0.5
+num_iterations = 2048
+early_stopping_rounds = 200
+```
+
+Luego la función:
+
+```r
+Estimar_AUC_lightgbm <- function(x)
+```
+
+entrena cada combinación del Grid Search y recupera:
+
+```r
+AUC <- modelo_train$record_evals$valid$auc$eval[
+  [modelo_train$best_iter]
+]
+
+niter <- modelo_train$best_iter
+```
+
+Es decir:
+
+```text
+AUC    -> métrica de validación del modelo
+niter  -> mejor iteración de boosting
+```
+
+Después el notebook evalúa las combinaciones del Grid y guarda:
+
+```r
+tb_nueva[, c("AUC", "num_iterations") :=
+  Estimar_AUC_lightgbm(.SD),
+  by = 1:nrow(tb_nueva)
+]
+```
+
+La tabla del Grid también se escribe en:
+
+```text
+tb_grid_search_01.txt
+```
+
+Finalmente se ordena por AUC y se conserva el ganador:
+
+```r
+setorder(tb_nueva, -AUC)
+
+PARAM$out$lgbm$AUC <- tb_nueva[1, AUC]
+
+PARAM$out$lgbm$mejores_hiperparametros <-
+  as.list(tb_nueva[1])
+```
+
+De ahí salen:
+
+```text
+AUC
+num_leaves
+min_data_in_leaf
+num_iterations / niter
+```
+
+que más tarde recupera el script `p12_04_integrar_resultados.py`.
+
+---
+
+## Qué parte del notebook genera los 11 cortes para Kaggle
+
+En la sección:
+
+```text
+Kaggle Competition Submit
+```
+
+el notebook define:
+
+```r
+PARAM$kaggle$cortes <- seq(
+  800,
+  1300,
+  by = 50
+)
+```
+
+Por lo tanto se prueban:
+
+```text
+800
+850
+900
+950
+1000
+1050
+1100
+1150
+1200
+1250
+1300
+```
+
+Para cada corte se crea un archivo:
+
+```r
+archivo_kaggle <- paste0(
+  "./kaggle/KA",
+  PARAM$experimento,
+  "_",
+  envios,
+  ".csv"
+)
+```
+
+y luego se ejecuta:
+
+```r
+kaggle competitions submit
+```
+
+Por ejemplo:
+
+```text
+KAP12_B100_S198427_800.csv
+KAP12_B100_S198427_850.csv
+...
+KAP12_B100_S198427_1300.csv
+```
+
+**Importante:** el notebook genera y envía esos archivos, pero la **ganancia / Public Score no la calcula el notebook**.
+
+La ganancia la calcula Kaggle después de recibir cada submission.
+
+---
+
+## Qué parte del notebook guarda `PARAM.yml`
+
+Al final de cada corrida se calcula el tiempo:
+
+```r
+P12_FIN <- Sys.time()
+
+PARAM$ejecucion$duracion_segundos <- as.numeric(
+  difftime(
+    P12_FIN,
+    P12_INICIO,
+    units = "secs"
+  )
+)
+
+PARAM$ejecucion$duracion_minutos <- round(
+  PARAM$ejecucion$duracion_segundos / 60,
+  2
+)
+```
+
+y finalmente:
+
+```r
+write_yaml(
+  PARAM,
+  file = "PARAM.yml"
+)
+```
+
+Por lo tanto `PARAM.yml` es la fuente local donde quedan guardados:
+
+```text
+escenario
+semilla
+training_pct
+AUC
+hiperparámetros ganadores
+niter
+registros antes/después
+porcentaje real conservado
+tiempo de ejecución
+```
+
+---
+
+## Qué hace cada script Python
+
+Una vez terminados los cinco escenarios de una semilla, usamos:
+
+```text
+p12_00_PROCESAR_SEMILLA_COMPLETA.py
+```
+
+Ese script es solamente un **orquestador**. No entrena modelos y no modifica Kaggle.
+
+Ejecuta en orden:
+
+```text
+p12_01_descargar_submissions.py
+        |
+        v
+p12_02_consolidar_kaggle.py
+        |
+        v
+p12_03_analizar_cortes.py
+        |
+        v
+p12_04_integrar_resultados.py
+```
+
+### Paso 1 - `p12_01_descargar_submissions.py`
+
+Consulta Kaggle en modo lectura:
+
+```text
+kaggle competitions submissions
+```
+
+y descarga los resultados que Kaggle ya calculó.
+
+Genera:
+
+```text
+90_RESULTADOS/
+    kaggle_submissions_completo.csv
+
+90_RESULTADOS/SEMx_SEED/
+    kaggle_SEMx_SEED_RAW.csv
+```
+
+El `RAW` contiene las submissions encontradas para esa semilla, incluyendo el `publicScore`.
+
+---
+
+### Paso 2 - `p12_02_consolidar_kaggle.py`
+
+Toma el `RAW`.
+
+Si un mismo archivo fue enviado más de una vez, conserva la submission **más reciente**.
+
+Después exige:
+
+```text
+5 escenarios × 11 cortes = 55 submissions
+```
+
+Si están las 55, genera:
+
+```text
+kaggle_SEMx_SEED_FINAL.csv
+```
+
+Si falta alguna, no genera el FINAL y detiene el procesamiento.
+
+---
+
+### Paso 3 - `p12_03_analizar_cortes.py`
+
+Toma:
+
+```text
+kaggle_SEMx_SEED_FINAL.csv
+```
+
+y trabaja con:
+
+```text
+fileName
+publicScore
+```
+
+Del nombre obtiene:
+
+```text
+escenario
+semilla
+corte
+```
+
+y de `publicScore` obtiene la ganancia.
+
+Genera dos archivos fundamentales:
+
+```text
+resultados_cortes_SEMx_SEED.csv
+resumen_maximos_SEMx_SEED.csv
+```
+
+`resultados_cortes` contiene:
+
+```text
+5 escenarios × 11 cortes = 55 filas
+```
+
+`resumen_maximos` reduce esas 55 filas a:
+
+```text
+5 escenarios = 5 filas
+```
+
+con:
+
+```text
+corte_maximo
+ganancia_maxima
+cantidad_empates
+```
+
+Además genera una curva por escenario dentro de:
+
+```text
+91_ANALISIS/SEMx_SEED/
+```
+
+---
+
+### Paso 4 - `p12_04_integrar_resultados.py`
+
+Este es el script que **junta las dos ramas de información**.
+
+Por un lado toma:
+
+```text
+resumen_maximos_SEMx_SEED.csv
+```
+
+que contiene la información proveniente de Kaggle:
+
+```text
+ganancia máxima
+corte ganador
+empates
+```
+
+Por otro lado abre los cinco:
+
+```text
+PARAM.yml
+```
+
+de esa semilla y recupera:
+
+```text
+AUC
+num_leaves
+min_data_in_leaf
+num_iterations
+training_antes
+training_despues
+porcentaje_real_conservado
+duracion_minutos
+```
+
+Finalmente genera:
+
+```text
+resumen_integrado_SEMx_SEED.csv
+```
+
+Ese archivo es nuestra **fuente principal para el análisis global**.
+
+La lógica puede visualizarse así:
+
+```text
+                    KAGGLE
+                       |
+                       v
+             resumen_maximos
+                       |
+                       |
+                       +-------------------+
+                                           \
+                                            \
+                                             v
+                                     p12_04_integrar
+                                             ^
+                                            /
+                                           /
+PARAM.yml de B100 -------------------------+
+PARAM.yml de U040 -------------------------+
+PARAM.yml de U010 -------------------------+
+PARAM.yml de U005 -------------------------+
+PARAM.yml de U001 -------------------------+
+                                             |
+                                             v
+                             resumen_integrado_SEM...
+```
+
+---
+
+## Entonces, ¿quién genera los archivos de `00_GLOBAL`?
+
+Esta distinción es fundamental.
+
+Los siguientes archivos **NO los genera el notebook**:
+
+```text
+estado_semillas_P12.csv
+tabla_maestra_P12.csv
+resumen_por_escenario_P12.csv
+comparacion_vs_baseline_P12.csv
+detalle_cortes_todas_semillas.csv
+```
+
+Tampoco los generan directamente los scripts Python anteriores.
+
+Los genera **este mismo archivo**:
+
+```text
+P12_informe_control.Rmd
+```
+
+a partir de lo que ya existe en `90_RESULTADOS`.
+
+La relación exacta es:
+
+| Archivo de `91_ANALISIS/00_GLOBAL` | Quién lo crea | Qué fuente usa |
+|---|---|---|
+| `estado_semillas_P12.csv` | este Rmd | existencia de archivos de `90_RESULTADOS` y `PARAMS_CORRIDAS` |
+| `tabla_maestra_P12.csv` | este Rmd | todos los `resumen_integrado_SEM...csv` completos |
+| `resumen_por_escenario_P12.csv` | este Rmd | `tabla_maestra_P12` |
+| `comparacion_vs_baseline_P12.csv` | este Rmd | `tabla_maestra_P12`, emparejando por semilla |
+| `detalle_cortes_todas_semillas.csv` | este Rmd | todos los `resultados_cortes_SEM...csv` completos |
+| gráficos globales `.png` | este Rmd | `tabla_maestra_P12` |
+
+Por lo tanto:
+
+```text
+.ipynb
+  |
+  +--> produce la corrida
+  +--> escribe PARAM.yml
+  +--> genera y envía los 11 archivos Kaggle
+            |
+            v
+          Kaggle
+            |
+            v
+       scripts Python
+            |
+            v
+      90_RESULTADOS
+            |
+            v
+P12_informe_control.Rmd
+            |
+            v
+91_ANALISIS/00_GLOBAL
+```
+
+Esta es la trazabilidad que debemos conservar para saber siempre **de dónde salió cada resultado sin tener que reconstruir todo mentalmente**.
+
+# Estado automático de las corridas
+
+```{r construir-estado}
+# Detectar semillas ya presentes en 90_RESULTADOS.
+carpetas_resultados <- list.dirs(
+  DIR_RESULTADOS,
+  recursive = FALSE,
+  full.names = TRUE
+)
+
+detectadas <- lapply(carpetas_resultados, extraer_sem_y_seed)
+
+detectadas_df <- do.call(
+  rbind,
+  lapply(detectadas, function(x) {
+    if (is.na(x$semilla)) return(NULL)
+    data.frame(
+      sem_nro = x$sem_nro,
+      semilla = x$semilla,
+      stringsAsFactors = FALSE
+    )
+  })
+)
+
+if (is.null(detectadas_df)) {
+  detectadas_df <- data.frame(
+    sem_nro = integer(),
+    semilla = integer()
+  )
+}
+
+# Incorporar automáticamente futuras semillas que existan en resultados
+# aunque todavía no estén agregadas manualmente al plan.
+if (nrow(detectadas_df) > 0) {
+  nuevas <- detectadas_df[
+    !detectadas_df$semilla %in% plan_semillas$semilla,
+    ,
+    drop = FALSE
+  ]
+
+  if (nrow(nuevas) > 0) {
+    nuevas$ejecutado_por <- "SIN_ASIGNAR"
+    plan_semillas <- rbind(
+      plan_semillas,
+      nuevas[, c("sem_nro", "semilla", "ejecutado_por")]
+    )
+  }
+}
+
+estado_lista <- list()
+
+for (i in seq_len(nrow(plan_semillas))) {
+
+  sem_nro <- plan_semillas$sem_nro[i]
+  seed <- plan_semillas$semilla[i]
+  autor <- plan_semillas$ejecutado_por[i]
+
+  carpeta_sem <- file.path(
+    DIR_RESULTADOS,
+    paste0("SEM", sem_nro, "_", seed)
+  )
+
+  prefijo <- paste0("SEM", sem_nro, "_", seed)
+
+  f_final <- file.path(
+    carpeta_sem,
+    paste0("kaggle_", prefijo, "_FINAL.csv")
+  )
+
+  f_cortes <- file.path(
+    carpeta_sem,
+    paste0("resultados_cortes_", prefijo, ".csv")
+  )
+
+  f_max <- file.path(
+    carpeta_sem,
+    paste0("resumen_maximos_", prefijo, ".csv")
+  )
+
+  f_integrado <- file.path(
+    carpeta_sem,
+    paste0("resumen_integrado_", prefijo, ".csv")
+  )
+
+  # Modelos finalizados: contamos los 5 PARAM.yml formales.
+  modelos_ok <- 0
+
+  if (dir.exists(DIR_PARAMS)) {
+    for (codigo in orden_codigos) {
+      f_param <- file.path(
+        DIR_PARAMS,
+        paste0("WFP12_", codigo, "_S", seed),
+        "PARAM.yml"
+      )
+
+      if (file.exists(f_param)) {
+        modelos_ok <- modelos_ok + 1
+      }
+    }
+  }
+
+  completo <- (
+    file.exists(f_final) &&
+    file.exists(f_cortes) &&
+    file.exists(f_max) &&
+    file.exists(f_integrado)
+  )
+
+  estado <- if (completo) {
+    "COMPLETA"
+  } else if (modelos_ok == 5) {
+    "MODELOS OK - KAGGLE/CONSOLIDACIÓN PENDIENTE"
+  } else if (modelos_ok > 0 || dir.exists(carpeta_sem)) {
+    "EN PROCESO"
+  } else {
+    "NO INICIADA"
+  }
+
+  estado_lista[[length(estado_lista) + 1]] <- data.frame(
+    SEM = paste0("SEM", sem_nro),
+    semilla = seed,
+    ejecutado_por = autor,
+    modelos_con_PARAM = modelos_ok,
+    Kaggle_FINAL = file.exists(f_final),
+    cortes = file.exists(f_cortes),
+    maximos = file.exists(f_max),
+    integrado = file.exists(f_integrado),
+    estado = estado,
+    stringsAsFactors = FALSE
+  )
+}
+
+estado_semillas <- do.call(rbind, estado_lista)
+
+write.csv(
+  estado_semillas,
+  file.path(DIR_GLOBAL, "estado_semillas_P12.csv"),
+  row.names = FALSE,
+  fileEncoding = "UTF-8"
+)
+
+knitr::kable(
+  estado_semillas,
+  caption = "Estado actual del experimento P12"
+)
+```
+
+Este cuadro es nuestro primer control: permite ver rápidamente qué semillas ya están listas para entrar en el análisis y cuáles todavía están incompletas.
+
+# Construcción automática de la tabla central
+
+```{r construir-maestra}
+archivos_integrados <- list.files(
+  DIR_RESULTADOS,
+  pattern = "^resumen_integrado_SEM[0-9]+_[0-9]+\\.csv$",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+maestra_lista <- list()
+
+# IMPORTANTE:
+# SEM1 fue generado con una versión anterior del proceso y tiene
+# menos columnas que SEM2/SEM3.
+#
+# Para evitar errores de rbind(), antes de unir los archivos
+# normalizamos TODOS a esta misma estructura común.
+columnas_maestra <- c(
+  "sem_nro",
+  "semilla",
+  "ejecutado_por",
+  "escenario_codigo",
+  "escenario",
+  "training_pct",
+  "training_antes",
+  "training_despues",
+  "porcentaje_real_conservado",
+  "AUC",
+  "num_leaves",
+  "min_data_in_leaf",
+  "num_iterations",
+  "ganancia_maxima",
+  "corte_maximo",
+  "cantidad_empates",
+  "duracion_minutos",
+  "archivo_fuente"
+)
+
+for (archivo in archivos_integrados) {
+
+  info <- extraer_sem_y_seed(archivo)
+
+  d <- read.csv(
+    archivo,
+    stringsAsFactors = FALSE,
+    check.names = FALSE,
+    encoding = "UTF-8"
+  )
+
+  requeridas <- c(
+    "escenario",
+    "semilla",
+    "corte_maximo",
+    "ganancia_maxima",
+    "AUC",
+    "num_leaves",
+    "min_data_in_leaf",
+    "num_iterations",
+    "training_antes",
+    "training_despues",
+    "porcentaje_real_conservado",
+    "duracion_minutos"
+  )
+
+  faltantes <- setdiff(requeridas, names(d))
+
+  if (length(faltantes) > 0) {
+    stop(
+      paste(
+        "Faltan columnas en",
+        basename(archivo),
+        ":",
+        paste(faltantes, collapse = ", ")
+      )
+    )
+  }
+
+  # SEM1 no trae escenario_codigo porque proviene de una versión
+  # anterior. Lo reconstruimos a partir de escenario.
+  if (!"escenario_codigo" %in% names(d)) {
+    d$escenario_codigo <- unname(
+      codigo_por_escenario[d$escenario]
+    )
+  }
+
+  d$sem_nro <- sem_nro_seed(
+    unique(d$semilla)[1],
+    info$sem_nro
+  )
+
+  d$ejecutado_por <- autor_semilla(
+    unique(d$semilla)[1]
+  )
+
+  d$training_pct <- unname(
+    training_pct_por_codigo[d$escenario_codigo]
+  )
+
+  d$archivo_fuente <- basename(archivo)
+
+  # ----------------------------------------------------------
+  # NORMALIZACIÓN CLAVE
+  # ----------------------------------------------------------
+  # Algunos CSV traen columnas adicionales (por ejemplo:
+  # positivos_antes, negativos_antes, param_yml) y SEM1 no.
+  #
+  # Para la tabla maestra solo conservamos las 18 columnas que
+  # necesitamos. Así todos los data.frame tienen exactamente
+  # la misma estructura antes de rbind().
+  #
+  # Si en el futuro faltara alguna columna no crítica de la
+  # estructura común, se crea como NA.
+  for (col in columnas_maestra) {
+    if (!col %in% names(d)) {
+      d[[col]] <- NA
+    }
+  }
+
+  d <- d[, columnas_maestra, drop = FALSE]
+
+  maestra_lista[[length(maestra_lista) + 1]] <- d
+}
+
+if (length(maestra_lista) == 0) {
+  stop("Todavía no hay resúmenes integrados para analizar.")
+}
+
+tabla_maestra <- do.call(rbind, maestra_lista)
+
+tabla_maestra$escenario_orden <- match(
+  tabla_maestra$escenario_codigo,
+  orden_codigos
+)
+
+tabla_maestra <- tabla_maestra[
+  order(
+    tabla_maestra$sem_nro,
+    tabla_maestra$escenario_orden
+  ),
+]
+
+tabla_maestra$escenario_orden <- NULL
+rownames(tabla_maestra) <- NULL
+
+write.csv(
+  tabla_maestra,
+  file.path(DIR_GLOBAL, "tabla_maestra_P12.csv"),
+  row.names = FALSE,
+  fileEncoding = "UTF-8"
+)
+
+n_semillas_completas <- length(unique(tabla_maestra$semilla))
+```
+
+En este Knit se están analizando **`r n_semillas_completas` semillas completas**, equivalentes a **`r nrow(tabla_maestra)` combinaciones semilla + escenario**.
+
+```{r tabla-central}
+# Para lectura rápida, la tabla visible se ordena por ganancia máxima
+# de mayor a menor. La tabla_maestra original NO se modifica.
+tabla_visible <- tabla_maestra[
+  order(
+    -tabla_maestra$ganancia_maxima,
+    -tabla_maestra$AUC,
+    tabla_maestra$sem_nro
+  ),
+  c(
+    "sem_nro",
+    "semilla",
+    "escenario",
+    "training_despues",
+    "porcentaje_real_conservado",
+    "AUC",
+    "ganancia_maxima",
+    "corte_maximo",
+    "duracion_minutos"
+  ),
+  drop = FALSE
+]
+
+tabla_visible <- cbind(
+  Ranking = seq_len(nrow(tabla_visible)),
+  tabla_visible
+)
+
+names(tabla_visible) <- c(
+  "Ranking",
+  "SEM",
+  "Semilla",
+  "Escenario",
+  "Registros",
+  "% real conservado",
+  "AUC",
+  "Ganancia máxima",
+  "Corte",
+  "Tiempo (min)"
+)
+
+knitr::kable(
+  tabla_visible,
+  digits = c(0, 0, 0, 0, 0, 2, 6, 3, 0, 2),
+  caption = "Tabla central del P12 ordenada por ganancia máxima (mayor a menor)"
+)
+```
+
+Esta tabla es el corazón de nuestro informe. Cada fila representa una réplica del experimento bajo un determinado nivel de undersampling.
+
+# Resumen por escenario
+
+```{r resumen-escenarios}
+resumen_lista <- list()
+
+for (codigo in orden_codigos) {
+
+  d <- tabla_maestra[
+    tabla_maestra$escenario_codigo == codigo,
+    ,
+    drop = FALSE
+  ]
+
+  if (nrow(d) == 0) next
+
+  resumen_lista[[length(resumen_lista) + 1]] <- data.frame(
+    codigo = codigo,
+    escenario = d$escenario[1],
+    n_semillas = nrow(d),
+    ganancia_media = mean(d$ganancia_maxima, na.rm = TRUE),
+    ganancia_mediana = median(d$ganancia_maxima, na.rm = TRUE),
+    ganancia_sd = if (nrow(d) > 1) sd(d$ganancia_maxima, na.rm = TRUE) else NA,
+    ganancia_min = min(d$ganancia_maxima, na.rm = TRUE),
+    ganancia_max = max(d$ganancia_maxima, na.rm = TRUE),
+    AUC_medio = mean(d$AUC, na.rm = TRUE),
+    registros_medios = mean(d$training_despues, na.rm = TRUE),
+    pct_real_medio = mean(d$porcentaje_real_conservado, na.rm = TRUE),
+    tiempo_medio_min = mean(d$duracion_minutos, na.rm = TRUE),
+    stringsAsFactors = FALSE
+  )
+}
+
+resumen_escenario <- do.call(rbind, resumen_lista)
+
+write.csv(
+  resumen_escenario,
+  file.path(DIR_GLOBAL, "resumen_por_escenario_P12.csv"),
+  row.names = FALSE,
+  fileEncoding = "UTF-8"
+)
+
+resumen_visible <- resumen_escenario[
+  order(-resumen_escenario$ganancia_media),
+  c(
+    "escenario",
+    "n_semillas",
+    "ganancia_media",
+    "ganancia_mediana",
+    "ganancia_sd",
+    "AUC_medio",
+    "registros_medios",
+    "pct_real_medio",
+    "tiempo_medio_min"
+  ),
+  drop = FALSE
+]
+
+resumen_visible <- cbind(
+  Ranking = seq_len(nrow(resumen_visible)),
+  resumen_visible
+)
+
+names(resumen_visible) <- c(
+  "Ranking",
+  "Escenario",
+  "N",
+  "Ganancia media ↑",
+  "Ganancia mediana ↑",
+  "SD ganancia ↓",
+  "AUC medio ↑",
+  "Registros medios",
+  "% real medio",
+  "Tiempo medio (min) ↓"
+)
+
+knitr::kable(
+  resumen_visible,
+  digits = c(0, 0, 0, 3, 3, 3, 6, 0, 2, 2),
+  caption = "Resumen por escenario ordenado por ganancia media (mayor a menor)"
+)
+```
+
+Este cuadro resume el comportamiento de los cinco escenarios con las 12 semillas. Para lectura rápida: **↑ indica que valores mayores son preferibles** y **↓ que valores menores son preferibles**, siempre interpretando las métricas en conjunto.
+
+
+## Estabilidad de la ganancia: desvío estándar y coeficiente de variación
+
+Como el título del Problema #12 habla de **estabilidad**, no alcanza con mirar solamente la ganancia media.
+
+Dos escenarios pueden tener una ganancia media parecida, pero uno puede variar mucho más que el otro entre semillas.
+
+Por eso usamos dos medidas:
+
+```text
+SD = desvío estándar de la ganancia
+CV = coeficiente de variación
+```
+
+El coeficiente de variación se calcula como:
+
+```text
+CV = SD / media × 100
+```
+
+y permite expresar la variabilidad en relación con el nivel medio de ganancia.
+
+```{r estabilidad-cv}
+tabla_estabilidad <- resumen_escenario
+
+tabla_estabilidad$CV_pct <- 100 *
+  tabla_estabilidad$ganancia_sd /
+  tabla_estabilidad$ganancia_media
+
+tabla_estabilidad$orden_estabilidad <- rank(
+  tabla_estabilidad$CV_pct,
+  ties.method = "min"
+)
+
+tabla_estabilidad_visible <- tabla_estabilidad[
+  order(tabla_estabilidad$CV_pct),
+  c(
+    "escenario",
+    "ganancia_media",
+    "ganancia_sd",
+    "CV_pct",
+    "orden_estabilidad"
+  ),
+  drop = FALSE
+]
+
+names(tabla_estabilidad_visible) <- c(
+  "Escenario",
+  "Ganancia media",
+  "SD",
+  "CV (%)",
+  "Orden de estabilidad"
+)
+
+knitr::kable(
+  tabla_estabilidad_visible,
+  digits = c(0, 3, 3, 1, 0),
+  caption = "Estabilidad de la ganancia entre semillas"
+)
+
+write.csv(
+  tabla_estabilidad,
+  file.path(
+    DIR_GLOBAL,
+    "estabilidad_ganancia_P12.csv"
+  ),
+  row.names = FALSE,
+  fileEncoding = "UTF-8"
+)
+
+cv_ordenada <- tabla_estabilidad[
+  order(tabla_estabilidad$CV_pct),
+  ,
+  drop = FALSE
+]
+
+escenario_mas_estable <- cv_ordenada$escenario[1]
+cv_mas_estable <- cv_ordenada$CV_pct[1]
+
+escenario_mas_variable <- cv_ordenada$escenario[nrow(cv_ordenada)]
+cv_mas_variable <- cv_ordenada$CV_pct[nrow(cv_ordenada)]
+```
+
+### Cómo interpretar el CV
+
+Como referencia **orientativa** —no como una regla universal—:
+
+```text
+CV más bajo  -> comportamiento más estable entre semillas
+CV más alto  -> mayor variabilidad relativa entre semillas
+```
+
+Con las 12 semillas integradas, el escenario con menor variabilidad relativa es **`r escenario_mas_estable`**, con un CV aproximado de **`r sprintf("%.1f", cv_mas_estable)`%**.
+
+El escenario con mayor variabilidad relativa es **`r escenario_mas_variable`**, con un CV aproximado de **`r sprintf("%.1f", cv_mas_variable)`%**.
+
+La lectura importante para el P12 es la siguiente:
+
+> **No buscamos solamente una ganancia alta; buscamos una ganancia alta que además sea estable entre semillas.**
+
+Por eso puede ocurrir que un escenario tenga una media muy atractiva pero sea menos confiable si esa media está sostenida por una o dos semillas excepcionales.
+
+Con las 12 semillas integradas, el escenario `1%` puede alcanzar una ganancia alta en algunas corridas, pero presenta la mayor variabilidad relativa. En cambio, `10%` muestra el menor CV y, por lo tanto, la mayor estabilidad relativa de ganancia entre los cinco escenarios.
+
+Esto responde directamente a una parte central de la pregunta de **“Estabilidad del modelo predictivo frente al Undersampling”**.
+
+---
+
+# Comparación de cada escenario contra su propio Baseline
+
+Para evitar comparar semillas distintas entre sí, cada escenario se compara con el **B100 de la misma semilla**.
+
+```{r comparacion-baseline}
+comparaciones <- list()
+
+for (seed in sort(unique(tabla_maestra$semilla))) {
+
+  dseed <- tabla_maestra[
+    tabla_maestra$semilla == seed,
+    ,
+    drop = FALSE
+  ]
+
+  base <- dseed[
+    dseed$escenario_codigo == "B100",
+    ,
+    drop = FALSE
+  ]
+
+  if (nrow(base) != 1) next
+
+  for (i in seq_len(nrow(dseed))) {
+
+    d <- dseed[i, ]
+
+    comparaciones[[length(comparaciones) + 1]] <- data.frame(
+      sem_nro = d$sem_nro,
+      semilla = seed,
+      escenario = d$escenario,
+      escenario_codigo = d$escenario_codigo,
+      ganancia = d$ganancia_maxima,
+      delta_ganancia_vs_B100 =
+        d$ganancia_maxima - base$ganancia_maxima,
+      AUC = d$AUC,
+      delta_AUC_vs_B100 =
+        d$AUC - base$AUC,
+      registros = d$training_despues,
+      reduccion_registros_pct =
+        100 * (base$training_despues - d$training_despues) /
+        base$training_despues,
+      tiempo_min = d$duracion_minutos,
+      ahorro_tiempo_pct =
+        100 * (base$duracion_minutos - d$duracion_minutos) /
+        base$duracion_minutos,
+      stringsAsFactors = FALSE
+    )
+  }
+}
+
+comparacion_baseline <- do.call(rbind, comparaciones)
+
+comparacion_baseline$escenario_orden <- match(
+  comparacion_baseline$escenario_codigo,
+  orden_codigos
+)
+
+comparacion_baseline <- comparacion_baseline[
+  order(
+    comparacion_baseline$sem_nro,
+    comparacion_baseline$escenario_orden
+  ),
+]
+
+comparacion_baseline$escenario_orden <- NULL
+rownames(comparacion_baseline) <- NULL
+
+write.csv(
+  comparacion_baseline,
+  file.path(DIR_GLOBAL, "comparacion_vs_baseline_P12.csv"),
+  row.names = FALSE,
+  fileEncoding = "UTF-8"
+)
+
+comparacion_visible <- comparacion_baseline[
+  comparacion_baseline$escenario_codigo != "B100",
+  c(
+    "sem_nro",
+    "semilla",
+    "escenario",
+    "delta_ganancia_vs_B100",
+    "delta_AUC_vs_B100",
+    "reduccion_registros_pct",
+    "ahorro_tiempo_pct"
+  )
+]
+
+names(comparacion_visible) <- c(
+  "SEM",
+  "Semilla",
+  "Escenario",
+  "Δ Ganancia vs 100%",
+  "Δ AUC vs 100%",
+  "Reducción registros %",
+  "Ahorro tiempo %"
+)
+
+knitr::kable(
+  comparacion_visible,
+  digits = c(0, 0, 0, 3, 6, 2, 2),
+  caption = "Cambio respecto del Baseline de la misma semilla"
+)
+```
+
+Esta es una de las tablas más importantes para interpretar el experimento:
+
+- `Δ Ganancia` cercano a cero: la ganancia se mantiene próxima al Baseline.
+- `Δ AUC` cercano a cero: el poder de ranking del modelo cambia poco.
+- `Reducción registros %`: cuánto dataset evitamos procesar.
+- `Ahorro tiempo %`: cuánto tiempo de cómputo se redujo.
+
+# Ganancia máxima
+
+> **Convención visual de este informe:** en los gráficos que comparan semillas, cada semilla conserva siempre el mismo color. En los gráficos de barras, cada escenario (100%, 40%, 10%, 5% y 1%) tiene un color propio. En el gráfico tiempo-ganancia se combinan color por semilla y símbolo por escenario. Esto permite seguir visualmente las réplicas sin depender solamente del tipo de línea.
+
+```{r grafico-ganancia}
+plot_ganancia <- function() {
+
+  old_par <- par(no.readonly = TRUE)
+  on.exit(par(old_par))
+
+  # Se reserva margen derecho para que la leyenda no tape las líneas.
+  par(mar = c(5, 4.5, 4, 10), xpd = NA)
+
+  x <- seq_along(orden_codigos)
+
+  yr <- range(
+    tabla_maestra$ganancia_maxima,
+    na.rm = TRUE
+  )
+
+  seeds <- sort(unique(tabla_maestra$semilla))
+  col_seed <- colores_por_semilla(seeds)
+
+  plot(
+    x,
+    rep(NA, length(x)),
+    type = "n",
+    xaxt = "n",
+    xlab = "Escenario de undersampling",
+    ylab = "Ganancia máxima (millones)",
+    ylim = yr,
+    main = "Ganancia máxima por escenario y semilla"
+  )
+
+  axis(1, at = x, labels = orden_escenarios)
+
+  for (j in seq_along(seeds)) {
+
+    d <- tabla_maestra[
+      tabla_maestra$semilla == seeds[j],
+      ,
+      drop = FALSE
+    ]
+
+    d <- d[
+      match(orden_codigos, d$escenario_codigo),
+      ,
+      drop = FALSE
+    ]
+
+    lines(
+      x,
+      d$ganancia_maxima,
+      type = "b",
+      col = col_seed[as.character(seeds[j])],
+      lwd = 2,
+      pch = 15 + ((j - 1) %% 10),
+      cex = 1.05,
+      lty = 1 + ((j - 1) %% 6)
+    )
+  }
+
+  sem_labels <- vapply(
+    seeds,
+    function(s) {
+      sn <- unique(tabla_maestra$sem_nro[tabla_maestra$semilla == s])[1]
+      paste0("S", sn, " · ", s)
+    },
+    character(1)
+  )
+
+  legend(
+    "topright",
+    inset = c(-0.34, 0),
+    legend = sem_labels,
+    col = unname(col_seed[as.character(seeds)]),
+    pch = 15 + ((seq_along(seeds) - 1) %% 10),
+    lty = 1 + ((seq_along(seeds) - 1) %% 6),
+    lwd = 2,
+    cex = 0.68,
+    bty = "n",
+    title = "Semilla"
+  )
+}
+
+plot_ganancia()
+
+png(
+  file.path(DIR_GRAFICOS, "01_ganancia_por_semilla.png"),
+  width = 1200,
+  height = 750,
+  res = 130
+)
+plot_ganancia()
+invisible(dev.off())
+```
+
+**Qué mirar:** no buscamos únicamente qué punto dio el score más alto. Nos interesa observar si la caída o estabilidad de la ganancia se repite entre semillas a medida que aumenta el undersampling.
+
+
+### Interpretación del gráfico
+
+Este gráfico muestra **cómo cambia la ganancia máxima para cada semilla cuando modificamos el nivel de undersampling**.
+
+Cada línea representa una semilla. Lo importante no es solamente cuál punto llega más alto, sino observar:
+
+- si las líneas siguen un patrón parecido;
+- si un escenario mantiene resultados similares entre semillas;
+- si aparecen saltos extremos;
+- y a partir de qué nivel de reducción comienza a aumentar la dispersión.
+
+Con las 12 semillas integradas, el **10%** mantiene ganancias competitivas y presenta una variabilidad relativa baja entre semillas.
+
+En cambio, el **1%** muestra una conducta mucho más irregular: SEM5 alcanza una ganancia muy alta, mientras otras semillas quedan bastante más abajo.
+
+Esto refuerza una idea importante:
+
+> **una ganancia alta en una única semilla no equivale necesariamente a estabilidad.**
+
+La lectura conjunta de este gráfico con SD, CV y Wilcoxon permite diferenciar **nivel de ganancia** de **estabilidad de la ganancia**.
+
+# AUC
+
+```{r grafico-auc}
+plot_auc <- function() {
+
+  old_par <- par(no.readonly = TRUE)
+  on.exit(par(old_par))
+
+  par(mar = c(5, 4.5, 4, 10), xpd = NA)
+
+  x <- seq_along(orden_codigos)
+
+  yr <- range(
+    tabla_maestra$AUC,
+    na.rm = TRUE
+  )
+
+  seeds <- sort(unique(tabla_maestra$semilla))
+  col_seed <- colores_por_semilla(seeds)
+
+  plot(
+    x,
+    rep(NA, length(x)),
+    type = "n",
+    xaxt = "n",
+    xlab = "Escenario de undersampling",
+    ylab = "AUC",
+    ylim = yr,
+    main = "AUC por escenario y semilla"
+  )
+
+  axis(1, at = x, labels = orden_escenarios)
+
+  for (j in seq_along(seeds)) {
+
+    d <- tabla_maestra[
+      tabla_maestra$semilla == seeds[j],
+      ,
+      drop = FALSE
+    ]
+
+    d <- d[
+      match(orden_codigos, d$escenario_codigo),
+      ,
+      drop = FALSE
+    ]
+
+    lines(
+      x,
+      d$AUC,
+      type = "b",
+      col = col_seed[as.character(seeds[j])],
+      lwd = 2,
+      pch = 15 + ((j - 1) %% 10),
+      cex = 1.05,
+      lty = 1 + ((j - 1) %% 6)
+    )
+  }
+
+  sem_labels <- vapply(
+    seeds,
+    function(s) {
+      sn <- unique(tabla_maestra$sem_nro[tabla_maestra$semilla == s])[1]
+      paste0("S", sn, " · ", s)
+    },
+    character(1)
+  )
+
+  legend(
+    "topright",
+    inset = c(-0.34, 0),
+    legend = sem_labels,
+    col = unname(col_seed[as.character(seeds)]),
+    pch = 15 + ((seq_along(seeds) - 1) %% 10),
+    lty = 1 + ((seq_along(seeds) - 1) %% 6),
+    lwd = 2,
+    cex = 0.68,
+    bty = "n",
+    title = "Semilla"
+  )
+}
+
+plot_auc()
+
+png(
+  file.path(DIR_GRAFICOS, "02_auc_por_semilla.png"),
+  width = 1200,
+  height = 750,
+  res = 130
+)
+plot_auc()
+invisible(dev.off())
+```
+
+El AUC no reemplaza a la ganancia económica. Lo utilizamos como una segunda mirada para entender si la capacidad predictiva del modelo se deteriora cuando reducimos datos.
+
+
+### Interpretación del gráfico
+
+Este gráfico muestra la evolución del **AUC**, es decir, la capacidad global del modelo para ordenar correctamente los casos.
+
+A diferencia de la ganancia económica, acá se observa un patrón bastante más regular:
+
+- `40%` permanece muy cerca del Baseline;
+- `10%` presenta una caída pequeña;
+- `5%` muestra un deterioro algo mayor;
+- `1%` evidencia una caída más clara en prácticamente todas las semillas.
+
+Los AUC medios actuales son:
+
+```{r auc-medios-visible, echo=FALSE}
+auc_visible <- resumen_escenario[
+  order(-resumen_escenario$AUC_medio),
+  c("escenario", "AUC_medio"),
+  drop = FALSE
+]
+
+names(auc_visible) <- c(
+  "Escenario",
+  "AUC medio ↑"
+)
+
+knitr::kable(
+  auc_visible,
+  digits = c(0, 6),
+  caption = "AUC medio por escenario"
+)
+```
+
+La lectura principal es:
+
+> **el modelo tolera bastante bien la reducción hasta 10%, pero por debajo de ese nivel empieza a perder capacidad predictiva de manera más visible.**
+
+Este gráfico también ayuda a interpretar situaciones como SEM5 al `1%`: aunque la ganancia económica de esa corrida es muy alta, el AUC del escenario 1% sigue mostrando deterioro. Por eso no debemos elegir un escenario mirando únicamente la ganancia.
+
+# Registros utilizados
+
+```{r grafico-registros}
+prom_reg <- tapply(
+  tabla_maestra$training_despues,
+  factor(
+    tabla_maestra$escenario_codigo,
+    levels = orden_codigos
+  ),
+  mean,
+  na.rm = TRUE
+)
+
+plot_registros <- function() {
+
+  barplot(
+    prom_reg,
+    names.arg = orden_escenarios,
+    col = unname(PALETA_ESCENARIOS[orden_codigos]),
+    border = "grey35",
+    xlab = "Escenario",
+    ylab = "Cantidad media de registros",
+    main = "Registros de entrenamiento utilizados"
+  )
+
+  legend(
+    "topright",
+    legend = orden_escenarios,
+    fill = unname(PALETA_ESCENARIOS[orden_codigos]),
+    title = "Escenario",
+    cex = 0.8,
+    bty = "n"
+  )
+}
+
+plot_registros()
+
+png(
+  file.path(DIR_GRAFICOS, "03_registros_promedio.png"),
+  width = 1200,
+  height = 750,
+  res = 130
+)
+plot_registros()
+invisible(dev.off())
+```
+
+Acá visualizamos cuánto estamos reduciendo realmente el volumen de entrenamiento. Recordar: el porcentaje nominal se aplica a CONTINUA, no al total completo.
+
+
+### Interpretación del gráfico
+
+Este gráfico responde directamente:
+
+> **¿Cuánto volumen de entrenamiento estamos evitando procesar?**
+
+Los registros medios actuales son:
+
+```{r registros-medios-visible, echo=FALSE}
+reg_visible <- resumen_escenario[
+  ,
+  c("escenario", "registros_medios", "pct_real_medio")
+]
+
+names(reg_visible) <- c(
+  "Escenario",
+  "Registros medios",
+  "% real conservado"
+)
+
+knitr::kable(
+  reg_visible,
+  digits = c(0, 0, 2),
+  caption = "Registros utilizados por escenario"
+)
+```
+
+El salto más importante es que `10%` utiliza alrededor de una décima parte del volumen original de CONTINUA y conserva, en términos reales, aproximadamente el 11% del conjunto de entrenamiento.
+
+Esto implica una reducción cercana al **89% de los registros respecto del Baseline**.
+
+Por eso, si el escenario 10% mantiene una ganancia y un AUC razonablemente estables, representa una reducción muy importante del costo de entrenamiento.
+
+# Tiempo de ejecución
+
+```{r grafico-tiempo}
+prom_tiempo <- tapply(
+  tabla_maestra$duracion_minutos,
+  factor(
+    tabla_maestra$escenario_codigo,
+    levels = orden_codigos
+  ),
+  mean,
+  na.rm = TRUE
+)
+
+plot_tiempo <- function() {
+
+  barplot(
+    prom_tiempo,
+    names.arg = orden_escenarios,
+    col = unname(PALETA_ESCENARIOS[orden_codigos]),
+    border = "grey35",
+    xlab = "Escenario",
+    ylab = "Tiempo medio (minutos)",
+    main = "Tiempo medio de ejecución por escenario"
+  )
+
+  legend(
+    "topright",
+    legend = orden_escenarios,
+    fill = unname(PALETA_ESCENARIOS[orden_codigos]),
+    title = "Escenario",
+    cex = 0.8,
+    bty = "n"
+  )
+}
+
+plot_tiempo()
+
+png(
+  file.path(DIR_GRAFICOS, "04_tiempo_promedio.png"),
+  width = 1200,
+  height = 750,
+  res = 130
+)
+plot_tiempo()
+invisible(dev.off())
+```
+
+Este gráfico permite cuantificar el beneficio computacional que acompaña al undersampling.
+
+
+### Interpretación del gráfico
+
+Este gráfico muestra el **tiempo medio necesario para ejecutar cada escenario**.
+
+Los tiempos medios actuales son:
+
+```{r tiempos-medios-visible, echo=FALSE}
+tiempo_visible <- resumen_escenario[
+  order(resumen_escenario$tiempo_medio_min),
+  c("escenario", "tiempo_medio_min"),
+  drop = FALSE
+]
+
+names(tiempo_visible) <- c(
+  "Escenario",
+  "Tiempo medio (min) ↓"
+)
+
+knitr::kable(
+  tiempo_visible,
+  digits = c(0, 2),
+  caption = "Tiempo medio de ejecución por escenario"
+)
+```
+
+Se observa que el undersampling reduce claramente el costo computacional.
+
+También se observa que **la reducción del tiempo no es proporcional a la reducción de registros**.
+
+Por ejemplo, al pasar de `100%` a `10%` eliminamos aproximadamente el 89% de los registros, pero el tiempo disminuye bastante menos. Esto ocurre porque existen costos de entrenamiento, preparación y búsqueda de hiperparámetros que no desaparecen aunque el dataset sea muy pequeño.
+
+La lectura práctica es:
+
+> **10% logra una reducción fuerte del volumen y un ahorro importante de tiempo; bajar todavía más a 5% o 1% aporta un ahorro adicional de tiempo relativamente menor.**
+
+# Relación tiempo - ganancia
+
+```{r grafico-tiempo-ganancia}
+plot_tiempo_ganancia <- function() {
+
+  old_par <- par(no.readonly = TRUE)
+  on.exit(par(old_par))
+
+  # Las 60 etiquetas dentro del gráfico se superponían.
+  # Se identifican los puntos mediante color (semilla) y símbolo
+  # (escenario), con ambas referencias fuera del área de datos.
+  par(mar = c(5, 4.5, 4, 11), xpd = NA)
+
+  seeds <- sort(unique(tabla_maestra$semilla))
+  col_seed <- colores_por_semilla(seeds)
+
+  colores_puntos <- unname(
+    col_seed[as.character(tabla_maestra$semilla)]
+  )
+
+  pch_escenario <- c(
+    B100 = 16,
+    U040 = 17,
+    U010 = 15,
+    U005 = 18,
+    U001 = 8
+  )
+
+  simbolos_puntos <- unname(
+    pch_escenario[tabla_maestra$escenario_codigo]
+  )
+
+  plot(
+    tabla_maestra$duracion_minutos,
+    tabla_maestra$ganancia_maxima,
+    xlab = "Tiempo de ejecución (minutos)",
+    ylab = "Ganancia máxima (millones)",
+    main = "Trade-off entre tiempo de ejecución y ganancia",
+    pch = simbolos_puntos,
+    col = colores_puntos,
+    cex = 1.15
+  )
+
+  sem_labels <- vapply(
+    seeds,
+    function(s) {
+      sn <- unique(tabla_maestra$sem_nro[tabla_maestra$semilla == s])[1]
+      paste0("S", sn, " · ", s)
+    },
+    character(1)
+  )
+
+  legend(
+    "topright",
+    inset = c(-0.38, 0),
+    legend = sem_labels,
+    col = unname(col_seed[as.character(seeds)]),
+    pch = 16,
+    title = "Semilla",
+    cex = 0.64,
+    bty = "n"
+  )
+
+  legend(
+    "bottomright",
+    inset = c(-0.31, 0),
+    legend = orden_escenarios,
+    pch = unname(pch_escenario[orden_codigos]),
+    title = "Escenario",
+    cex = 0.72,
+    bty = "n"
+  )
+}
+
+plot_tiempo_ganancia()
+
+png(
+  file.path(DIR_GRAFICOS, "05_tiempo_vs_ganancia.png"),
+  width = 1200,
+  height = 750,
+  res = 130
+)
+plot_tiempo_ganancia()
+invisible(dev.off())
+```
+
+Este gráfico **no implica que la ganancia sea una función del tiempo**. Simplemente coloca juntas dos métricas reales de cada corrida para observar el compromiso entre costo computacional y resultado económico. Para evitar superposiciones, los puntos no llevan texto encima: **color = semilla** y **símbolo = escenario**, con las referencias ubicadas fuera del área del gráfico.
+
+
+### Interpretación del gráfico
+
+Este gráfico combina dos objetivos:
+
+```text
+eje X -> tiempo de ejecución
+eje Y -> ganancia máxima
+```
+
+Conceptualmente, los puntos más atractivos son los que se ubican:
+
+```text
+más arriba     -> mayor ganancia
+más a la izquierda -> menor tiempo
+```
+
+No significa que el tiempo cause la ganancia. Es simplemente una forma de visualizar el **trade-off entre costo computacional y resultado económico**.
+
+Los escenarios `40%` y `10%` tienden a desplazarse hacia tiempos menores sin mostrar una pérdida sistemática clara de ganancia.
+
+El escenario `1%` consigue tiempos bajos, pero presenta mucha más dispersión económica entre semillas.
+
+Esto vuelve a colocar al `10%` como un candidato interesante a **punto de equilibrio**: gran reducción de recursos con comportamiento todavía relativamente estable.
+
+# Hiperparámetros ganadores y `niter`
+
+```{r tabla-hiperparametros}
+hiper <- tabla_maestra[
+  ,
+  c(
+    "sem_nro",
+    "semilla",
+    "escenario",
+    "num_leaves",
+    "min_data_in_leaf",
+    "num_iterations"
+  )
+]
+
+names(hiper) <- c(
+  "SEM",
+  "Semilla",
+  "Escenario",
+  "num_leaves",
+  "min_data_in_leaf",
+  "niter"
+)
+
+knitr::kable(
+  hiper,
+  caption = "Configuración ganadora del Grid Search por semilla y escenario"
+)
+```
+
+Estos valores son útiles para comprender el comportamiento del entrenamiento. **No significa que nosotros hayamos cambiado manualmente los hiperparámetros entre escenarios**: el mismo procedimiento de búsqueda se vuelve a ejecutar y puede seleccionar un ganador diferente.
+
+`niter` es la mejor iteración de boosting determinada durante el entrenamiento; **no es el corte de Kaggle**.
+
+# Cortes de Kaggle
+
+```{r cargar-cortes}
+archivos_cortes <- list.files(
+  DIR_RESULTADOS,
+  pattern = "^resultados_cortes_SEM[0-9]+_[0-9]+\\.csv$",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+detalle_lista <- list()
+
+for (archivo in archivos_cortes) {
+
+  info <- extraer_sem_y_seed(archivo)
+
+  d <- read.csv(
+    archivo,
+    stringsAsFactors = FALSE,
+    check.names = FALSE,
+    encoding = "UTF-8"
+  )
+
+  # Solo incorporamos semillas presentes en la tabla maestra.
+  if (!info$semilla %in% tabla_maestra$semilla) next
+
+  d$sem_nro <- sem_nro_seed(info$semilla, info$sem_nro)
+  detalle_lista[[length(detalle_lista) + 1]] <- d
+}
+
+if (length(detalle_lista) > 0) {
+
+  detalle_cortes <- do.call(rbind, detalle_lista)
+
+  detalle_cortes$escenario_orden <- match(
+    detalle_cortes$escenario_codigo,
+    orden_codigos
+  )
+
+  detalle_cortes <- detalle_cortes[
+    order(
+      detalle_cortes$sem_nro,
+      detalle_cortes$escenario_orden,
+      detalle_cortes$corte
+    ),
+  ]
+
+  detalle_cortes$escenario_orden <- NULL
+
+  write.csv(
+    detalle_cortes,
+    file.path(
+      DIR_GLOBAL,
+      "detalle_cortes_todas_semillas.csv"
+    ),
+    row.names = FALSE,
+    fileEncoding = "UTF-8"
+  )
+}
+```
+
+Los cortes evaluados son `800, 850, ..., 1300`. Para el análisis principal conservamos la **ganancia máxima obtenida dentro de esos 11 cortes**, pero mantenemos todo el detalle para poder revisar la curva cuando sea necesario.
+
+```{r tabla-cortes-maximos}
+cortes_maximos <- tabla_maestra[
+  order(-tabla_maestra$ganancia_maxima),
+  c(
+    "sem_nro",
+    "semilla",
+    "escenario",
+    "ganancia_maxima",
+    "corte_maximo",
+    "cantidad_empates"
+  ),
+  drop = FALSE
+]
+
+cortes_maximos <- cbind(
+  Ranking = seq_len(nrow(cortes_maximos)),
+  cortes_maximos
+)
+
+names(cortes_maximos) <- c(
+  "Ranking",
+  "SEM",
+  "Semilla",
+  "Escenario",
+  "Ganancia máxima ↑",
+  "Corte(s) máximo(s)",
+  "Cantidad de empates"
+)
+
+knitr::kable(
+  cortes_maximos,
+  digits = c(0, 0, 0, 0, 3, 0, 0),
+  caption = "Corte ganador por escenario y semilla, ordenado por ganancia (mayor a menor)"
+)
+```
+
+
+# Comparación de escenarios todos contra todos
+
+Primero comparamos cada escenario contra su propio Baseline (`100%`).
+
+Eso responde:
+
+> **¿Qué cambia respecto del escenario sin undersampling?**
+
+Pero para estudiar correctamente el Problema #12 también necesitamos comparar **todos los escenarios entre sí**, porque buscamos detectar en qué punto la reducción de datos empieza a cambiar de manera sistemática el comportamiento del modelo.
+
+Con cinco escenarios existen exactamente diez comparaciones:
+
+```text
+100% vs 40%
+100% vs 10%
+100% vs 5%
+100% vs 1%
+
+40% vs 10%
+40% vs 5%
+40% vs 1%
+
+10% vs 5%
+10% vs 1%
+
+5% vs 1%
+```
+
+La comparación es **pareada por semilla**.
+
+Por ejemplo:
+
+```text
+40% vs 10%
+
+SEM1:  ganancia 40% vs ganancia 10%
+SEM2:  ganancia 40% vs ganancia 10%
+...
+SEM11: ganancia 40% vs ganancia 10%
+SEM12: ganancia 40% vs ganancia 10%
+```
+
+Nunca se compara una semilla con otra.
+
+---
+
+## Construcción automática de las diez comparaciones
+
+```{r todos-contra-todos}
+pares_escenarios <- combn(
+  orden_codigos,
+  2,
+  simplify = FALSE
+)
+
+detalle_pares <- list()
+resumen_pares <- list()
+
+for (par in pares_escenarios) {
+
+  codigo_A <- par[1]
+  codigo_B <- par[2]
+
+  dA <- tabla_maestra[
+    tabla_maestra$escenario_codigo == codigo_A,
+    c("semilla", "sem_nro", "ganancia_maxima"),
+    drop = FALSE
+  ]
+
+  dB <- tabla_maestra[
+    tabla_maestra$escenario_codigo == codigo_B,
+    c("semilla", "sem_nro", "ganancia_maxima"),
+    drop = FALSE
+  ]
+
+  names(dA)[names(dA) == "ganancia_maxima"] <- "ganancia_A"
+  names(dB)[names(dB) == "ganancia_maxima"] <- "ganancia_B"
+
+  pareado <- merge(
+    dA,
+    dB,
+    by = c("semilla", "sem_nro"),
+    all = FALSE
+  )
+
+  pareado$escenario_A <- codigo_A
+  pareado$escenario_B <- codigo_B
+
+  pareado$delta_A_menos_B <-
+    pareado$ganancia_A - pareado$ganancia_B
+
+  pareado$resultado <- ifelse(
+    pareado$delta_A_menos_B > 0,
+    "A gana",
+    ifelse(
+      pareado$delta_A_menos_B < 0,
+      "B gana",
+      "Empate"
+    )
+  )
+
+  detalle_pares[[length(detalle_pares) + 1]] <- pareado
+
+  resumen_pares[[length(resumen_pares) + 1]] <- data.frame(
+    escenario_A = codigo_A,
+    escenario_B = codigo_B,
+    n_pares = nrow(pareado),
+    A_gana = sum(pareado$delta_A_menos_B > 0),
+    empates = sum(pareado$delta_A_menos_B == 0),
+    B_gana = sum(pareado$delta_A_menos_B < 0),
+    delta_media = mean(
+      pareado$delta_A_menos_B,
+      na.rm = TRUE
+    ),
+    delta_mediana = median(
+      pareado$delta_A_menos_B,
+      na.rm = TRUE
+    ),
+    stringsAsFactors = FALSE
+  )
+}
+
+detalle_todos_contra_todos <- do.call(
+  rbind,
+  detalle_pares
+)
+
+resumen_todos_contra_todos <- do.call(
+  rbind,
+  resumen_pares
+)
+
+# Traducir códigos a etiquetas más fáciles de leer.
+etiqueta_codigo <- setNames(
+  orden_escenarios,
+  orden_codigos
+)
+
+resumen_todos_contra_todos$escenario_A_pct <-
+  unname(
+    etiqueta_codigo[
+      resumen_todos_contra_todos$escenario_A
+    ]
+  )
+
+resumen_todos_contra_todos$escenario_B_pct <-
+  unname(
+    etiqueta_codigo[
+      resumen_todos_contra_todos$escenario_B
+    ]
+  )
+
+resumen_todos_contra_todos <- resumen_todos_contra_todos[
+  ,
+  c(
+    "escenario_A",
+    "escenario_A_pct",
+    "escenario_B",
+    "escenario_B_pct",
+    "n_pares",
+    "A_gana",
+    "empates",
+    "B_gana",
+    "delta_media",
+    "delta_mediana"
+  )
+]
+
+write.csv(
+  detalle_todos_contra_todos,
+  file.path(
+    DIR_GLOBAL,
+    "detalle_comparaciones_todos_contra_todos_P12.csv"
+  ),
+  row.names = FALSE,
+  fileEncoding = "UTF-8"
+)
+
+write.csv(
+  resumen_todos_contra_todos,
+  file.path(
+    DIR_GLOBAL,
+    "comparaciones_todos_contra_todos_P12.csv"
+  ),
+  row.names = FALSE,
+  fileEncoding = "UTF-8"
+)
+```
+
+---
+
+## Resumen descriptivo de las diez comparaciones
+
+En la tabla siguiente:
+
+- `A gana` = cuántas semillas tuvieron mayor ganancia en el escenario A;
+- `Empates` = cuántas semillas dieron exactamente la misma ganancia máxima;
+- `B gana` = cuántas semillas favorecieron al escenario B;
+- `Delta media` = promedio de `Ganancia A - Ganancia B`;
+- `Delta mediana` = mediana de `Ganancia A - Ganancia B`.
+
+Por lo tanto:
+
+```text
+Delta > 0  -> favorece A
+Delta = 0  -> comportamiento equivalente en la medida observada
+Delta < 0  -> favorece B
+```
+
+```{r tabla-todos-contra-todos}
+tabla_pares_visible <- resumen_todos_contra_todos[
+  ,
+  c(
+    "escenario_A_pct",
+    "escenario_B_pct",
+    "n_pares",
+    "A_gana",
+    "empates",
+    "B_gana",
+    "delta_media",
+    "delta_mediana"
+  )
+]
+
+names(tabla_pares_visible) <- c(
+  "Escenario A",
+  "Escenario B",
+  "N pares",
+  "A gana",
+  "Empates",
+  "B gana",
+  "Delta media",
+  "Delta mediana"
+)
+
+knitr::kable(
+  tabla_pares_visible,
+  digits = c(0, 0, 0, 0, 0, 0, 3, 3),
+  caption = "Comparación descriptiva de ganancias: todos los escenarios contra todos"
+)
+```
+
+Esta tabla todavía **no habla de significancia estadística**. Primero nos permite ver el patrón de dirección de las diferencias entre escenarios.
+
+---
+
+## Wilcoxon pareado - todos contra todos
+
+Como las mismas semillas se utilizan en los cinco escenarios, corresponde una comparación **pareada**.
+
+Para cada una de las diez parejas se aplica:
+
+```r
+wilcox.test(
+  ganancia_A,
+  ganancia_B,
+  paired = TRUE,
+  exact = FALSE
+)
+```
+
+Se utiliza `exact = FALSE` porque en nuestros datos pueden existir empates o diferencias iguales a cero.
+
+> **Alcance:** este es el análisis inferencial correspondiente a las **12 semillas integradas**. Si en el futuro se agregaran nuevas semillas, el mismo bloque se recalculará automáticamente sin cambiar la metodología.
+
+```{r wilcoxon-todos-contra-todos}
+wilcoxon_lista <- list()
+
+for (par in pares_escenarios) {
+
+  codigo_A <- par[1]
+  codigo_B <- par[2]
+
+  dA <- tabla_maestra[
+    tabla_maestra$escenario_codigo == codigo_A,
+    c("semilla", "ganancia_maxima"),
+    drop = FALSE
+  ]
+
+  dB <- tabla_maestra[
+    tabla_maestra$escenario_codigo == codigo_B,
+    c("semilla", "ganancia_maxima"),
+    drop = FALSE
+  ]
+
+  names(dA)[2] <- "ganancia_A"
+  names(dB)[2] <- "ganancia_B"
+
+  pareado <- merge(
+    dA,
+    dB,
+    by = "semilla",
+    all = FALSE
+  )
+
+  diferencias <- pareado$ganancia_A -
+    pareado$ganancia_B
+
+  n_no_cero <- sum(diferencias != 0)
+
+  # Si todas las diferencias fueran cero, Wilcoxon no tiene
+  # variación que analizar. En ese caso dejamos p_value = 1.
+  if (n_no_cero == 0) {
+
+    estadistico <- 0
+    p_value <- 1
+
+  } else {
+
+    test <- suppressWarnings(
+      wilcox.test(
+        pareado$ganancia_A,
+        pareado$ganancia_B,
+        paired = TRUE,
+        exact = FALSE,
+        correct = FALSE
+      )
+    )
+
+    estadistico <- unname(test$statistic)
+    p_value <- test$p.value
+  }
+
+  wilcoxon_lista[[length(wilcoxon_lista) + 1]] <- data.frame(
+    escenario_A = codigo_A,
+    escenario_A_pct = unname(etiqueta_codigo[codigo_A]),
+    escenario_B = codigo_B,
+    escenario_B_pct = unname(etiqueta_codigo[codigo_B]),
+    n_pares = nrow(pareado),
+    n_diferencias_no_cero = n_no_cero,
+    mediana_delta = median(
+      diferencias,
+      na.rm = TRUE
+    ),
+    estadistico_W = estadistico,
+    p_value = p_value,
+    stringsAsFactors = FALSE
+  )
+}
+
+wilcoxon_todos_contra_todos <- do.call(
+  rbind,
+  wilcoxon_lista
+)
+
+# Corrección Holm como información complementaria por tratarse
+# de 10 comparaciones simultáneas.
+wilcoxon_todos_contra_todos$p_value_holm <- p.adjust(
+  wilcoxon_todos_contra_todos$p_value,
+  method = "holm"
+)
+
+wilcoxon_todos_contra_todos$significativo_005 <- ifelse(
+  wilcoxon_todos_contra_todos$p_value < 0.05,
+  "SI",
+  "NO"
+)
+
+wilcoxon_todos_contra_todos$significativo_holm_005 <- ifelse(
+  wilcoxon_todos_contra_todos$p_value_holm < 0.05,
+  "SI",
+  "NO"
+)
+
+write.csv(
+  wilcoxon_todos_contra_todos,
+  file.path(
+    DIR_GLOBAL,
+    "wilcoxon_todos_contra_todos_P12.csv"
+  ),
+  row.names = FALSE,
+  fileEncoding = "UTF-8"
+)
+```
+
+---
+
+## Tabla de Wilcoxon
+
+```{r tabla-wilcoxon-todos-contra-todos}
+wilcoxon_visible <- wilcoxon_todos_contra_todos[
+  order(wilcoxon_todos_contra_todos$p_value),
+  c(
+    "escenario_A_pct",
+    "escenario_B_pct",
+    "n_pares",
+    "n_diferencias_no_cero",
+    "mediana_delta",
+    "estadistico_W",
+    "p_value",
+    "p_value_holm"
+  ),
+  drop = FALSE
+]
+
+wilcoxon_visible$Direccion <- ifelse(
+  wilcoxon_visible$mediana_delta > 0,
+  paste0(wilcoxon_visible$escenario_A_pct, " > ", wilcoxon_visible$escenario_B_pct),
+  ifelse(
+    wilcoxon_visible$mediana_delta < 0,
+    paste0(wilcoxon_visible$escenario_B_pct, " > ", wilcoxon_visible$escenario_A_pct),
+    "Sin dirección central"
+  )
+)
+
+wilcoxon_visible$Evidencia <- ifelse(
+  wilcoxon_visible$p_value_holm < 0.05,
+  "Significativa tras Holm",
+  ifelse(
+    wilcoxon_visible$p_value < 0.05,
+    "p<0.05; no sostiene Holm",
+    "Sin evidencia p<0.05"
+  )
+)
+
+names(wilcoxon_visible)[1:8] <- c(
+  "Escenario A",
+  "Escenario B",
+  "N pares",
+  "N diferencias no cero",
+  "Mediana delta",
+  "W",
+  "p-value",
+  "p-value Holm"
+)
+
+knitr::kable(
+  wilcoxon_visible,
+  digits = c(0, 0, 0, 0, 3, 3, 4, 4, 0, 0),
+  caption = "Wilcoxon pareado: 10 comparaciones ordenadas por p-value (menor a mayor)"
+)
+```
+
+
+### Resultado global de las 10 comparaciones
+
+```{r resumen-inferencial-completo}
+n_sig_005 <- sum(
+  wilcoxon_todos_contra_todos$p_value < 0.05,
+  na.rm = TRUE
+)
+
+n_sig_holm_005 <- sum(
+  wilcoxon_todos_contra_todos$p_value_holm < 0.05,
+  na.rm = TRUE
+)
+
+fila_min_p <- wilcoxon_todos_contra_todos[
+  which.min(wilcoxon_todos_contra_todos$p_value),
+  ,
+  drop = FALSE
+]
+
+comparacion_min_p <- paste0(
+  fila_min_p$escenario_A_pct,
+  " vs ",
+  fila_min_p$escenario_B_pct
+)
+
+p_min <- fila_min_p$p_value
+p_min_holm <- fila_min_p$p_value_holm
+```
+
+Con las **12 semillas integradas**, las diez comparaciones se apoyan en **12 pares** cada una.
+
+- Comparaciones con `p-value < 0.05`: **`r n_sig_005` de 10**.
+- Comparaciones con `p-value Holm < 0.05`: **`r n_sig_holm_005` de 10**.
+- La comparación con menor `p-value` es **`r comparacion_min_p`**, con `p = `r sprintf("%.4f", p_min)` y `p Holm = `r sprintf("%.4f", p_min_holm)`.
+
+La interpretación conjunta es importante:
+
+> **Con estas 12 semillas no aparece evidencia estadística suficiente para afirmar que la ganancia económica difiera de manera sistemática entre alguno de los pares de escenarios al nivel 0.05.**
+
+Esto **no demuestra que todos los escenarios sean iguales**. Significa que la decisión no debe basarse en una supuesta diferencia estadísticamente significativa de ganancia que nuestros datos no muestran. Por eso el P12 debe resolverse combinando:
+
+1. nivel y estabilidad de la ganancia;
+2. AUC;
+3. reducción de registros;
+4. tiempo de ejecución;
+5. patrón pareado entre semillas.
+
+---
+
+### Cómo leer esta tabla
+
+El `p-value` responde:
+
+> **¿Las diferencias pareadas de ganancia observadas entre estos dos escenarios muestran evidencia de un cambio sistemático entre semillas?**
+
+
+### Qué significa realmente el p-value
+
+El p-value **no indica cuál escenario es mejor** y tampoco significa que un escenario sea “más certero”.
+
+En nuestro Wilcoxon, la hipótesis nula puede expresarse de manera simple como:
+
+> **Entre el escenario A y el escenario B no existe una diferencia sistemática de ganancia entre semillas.**
+
+Entonces:
+
+```text
+p-value pequeño
+      |
+      v
+mayor evidencia contra la hipótesis nula
+      |
+      v
+hay indicios de que A y B se comportan de manera diferente
+
+p-value grande
+      |
+      v
+no hay evidencia suficiente para afirmar
+que A y B tengan una diferencia sistemática
+```
+
+Por lo tanto:
+
+> **un p-value más cercano a cero NO significa que esa fila sea “la mejor”.**
+
+Para saber hacia qué escenario apunta la diferencia hay que mirar también:
+
+```text
+A gana
+B gana
+Empates
+Mediana delta
+```
+
+La dirección se interpreta así:
+
+```text
+Mediana delta > 0 -> favorece A
+Mediana delta = 0 -> no aparece una dirección central clara
+Mediana delta < 0 -> favorece B
+```
+
+---
+
+### Ejemplo real: 40% vs 5%
+
+```{r preparar-ejemplos-wilcoxon, include=FALSE}
+fila_w_40_5 <- wilcoxon_todos_contra_todos[
+  wilcoxon_todos_contra_todos$escenario_A == "U040" &
+  wilcoxon_todos_contra_todos$escenario_B == "U005",
+  ,
+  drop = FALSE
+]
+
+fila_d_40_5 <- resumen_todos_contra_todos[
+  resumen_todos_contra_todos$escenario_A == "U040" &
+  resumen_todos_contra_todos$escenario_B == "U005",
+  ,
+  drop = FALSE
+]
+
+fila_w_40_10 <- wilcoxon_todos_contra_todos[
+  wilcoxon_todos_contra_todos$escenario_A == "U040" &
+  wilcoxon_todos_contra_todos$escenario_B == "U010",
+  ,
+  drop = FALSE
+]
+
+fila_d_40_10 <- resumen_todos_contra_todos[
+  resumen_todos_contra_todos$escenario_A == "U040" &
+  resumen_todos_contra_todos$escenario_B == "U010",
+  ,
+  drop = FALSE
+]
+
+fila_w_100_10 <- wilcoxon_todos_contra_todos[
+  wilcoxon_todos_contra_todos$escenario_A == "B100" &
+  wilcoxon_todos_contra_todos$escenario_B == "U010",
+  ,
+  drop = FALSE
+]
+
+fila_d_100_10 <- resumen_todos_contra_todos[
+  resumen_todos_contra_todos$escenario_A == "B100" &
+  resumen_todos_contra_todos$escenario_B == "U010",
+  ,
+  drop = FALSE
+]
+```
+
+Con las 12 semillas integradas:
+
+```text
+40% vs 5%
+
+A gana        = `r fila_d_40_5$A_gana`
+Empates       = `r fila_d_40_5$empates`
+B gana        = `r fila_d_40_5$B_gana`
+Mediana delta = `r sprintf("%.3f", fila_w_40_5$mediana_delta)`
+p-value       = `r sprintf("%.4f", fila_w_40_5$p_value)`
+p-value Holm  = `r sprintf("%.4f", fila_w_40_5$p_value_holm)`
+```
+
+Descriptivamente, el patrón es fuerte si todas o casi todas las semillas favorecen al mismo escenario.
+
+El p-value original indica qué tan compatible resulta ese patrón con la hipótesis de “no diferencia sistemática”.
+
+---
+
+### ¿Qué es el p-value Holm?
+
+En este trabajo hacemos **10 comparaciones todos contra todos**.
+
+Cuantas más pruebas realizamos, mayor es la probabilidad de obtener algún p-value pequeño simplemente por azar.
+
+La corrección de **Holm** hace el criterio más exigente para controlar este problema de comparaciones múltiples.
+
+Conceptualmente:
+
+```text
+1 comparación
+     |
+     v
+menor riesgo de falso positivo
+
+10 comparaciones
+     |
+     v
+mayor riesgo de encontrar algún p pequeño por azar
+
+corrección Holm
+     |
+     v
+criterio más exigente
+```
+
+Para `40% vs 5%`, el valor sin corrección es **`r sprintf("%.4f", fila_w_40_5$p_value)`**, mientras que el valor ajustado por Holm es **`r sprintf("%.4f", fila_w_40_5$p_value_holm)`**.
+
+Si el p-value original fuera menor a `0.05`, pero el valor Holm fuera mayor, la lectura correcta sería:
+
+> **existe una señal descriptiva interesante, pero todavía no alcanza para declararla estadísticamente significativa después de considerar las diez comparaciones simultáneas.**
+
+---
+
+### Ejemplo real: 40% vs 10%
+
+Con las 12 semillas integradas:
+
+```text
+A gana        = `r fila_d_40_10$A_gana`
+Empates       = `r fila_d_40_10$empates`
+B gana        = `r fila_d_40_10$B_gana`
+Mediana delta = `r sprintf("%.3f", fila_w_40_10$mediana_delta)`
+p-value       = `r sprintf("%.4f", fila_w_40_10$p_value)`
+```
+
+Si el patrón se reparte entre A y B y la mediana es cercana a cero, eso indica que **no aparece una dirección consistente de ganancia entre ambos escenarios**.
+
+Para el P12 esto puede ser muy importante: si `40%` y `10%` producen ganancias similares, pero `10%` utiliza muchos menos registros, el escenario 10% puede resultar operacionalmente mucho más atractivo.
+
+---
+
+### Ejemplo real: 100% vs 10%
+
+Con las 12 semillas integradas:
+
+```text
+A gana        = `r fila_d_100_10$A_gana`
+Empates       = `r fila_d_100_10$empates`
+B gana        = `r fila_d_100_10$B_gana`
+Mediana delta = `r sprintf("%.3f", fila_w_100_10$mediana_delta)`
+p-value       = `r sprintf("%.4f", fila_w_100_10$p_value)`
+```
+
+Si no encontramos evidencia de una diferencia sistemática frente al Baseline, eso **no significa que los escenarios sean matemáticamente idénticos**.
+
+Significa que, con las semillas disponibles, no tenemos evidencia suficiente para afirmar que sus ganancias difieran de forma sistemática.
+
+Y para nuestro experimento eso puede ser justamente una señal favorable si, al mismo tiempo, reducimos cerca del 89% de los registros.
+
+---
+
+### Cuidado especial con el escenario 1%
+
+El `1%` puede producir alguna ganancia extraordinariamente alta, pero también muestra:
+
+- mayor dispersión de ganancia;
+- mayor CV;
+- peor AUC medio;
+- diferencias importantes entre semillas.
+
+Por eso su media puede verse muy influida por una corrida excepcional.
+
+En estos casos conviene mirar especialmente:
+
+```text
+mediana
+SD
+CV
+A gana / B gana
+AUC
+```
+
+y no solamente la media o el p-value.
+
+---
+
+### Orden recomendado para interpretar cada comparación
+
+Para nuestro P12 conviene mirar:
+
+```text
+1. A gana / B gana / Empates
+2. Mediana delta
+3. SD y CV
+4. Magnitud de las diferencias
+5. p-value
+6. p-value Holm
+7. AUC
+8. Registros utilizados
+9. Tiempo de ejecución
+```
+
+La pregunta central no es:
+
+> “¿Qué fila tiene el p-value más bajo?”
+
+La pregunta es:
+
+> **¿Hasta cuánto podemos reducir los datos sin deteriorar de manera relevante y estable el modelo?**
+
+Con las **12 semillas integradas**, la interpretación se realiza sobre el conjunto completo actualmente disponible:
+
+- las comparaciones son pareadas y usan 12 pares por escenario;
+- pueden existir empates o diferencias iguales a cero;
+- el Wilcoxon se interpreta junto con la magnitud y dirección de las diferencias;
+- la conclusión no se decide únicamente por el `p-value`, sino también por dispersión, AUC y ahorro de recursos;
+- si en el futuro se incorporaran nuevas semillas, el informe se recalcularía automáticamente sin cambiar la metodología.
+
+El `p-value Holm` se conserva como información adicional porque estamos realizando diez comparaciones simultáneamente. No reemplaza el criterio que finalmente indique el profesor para el trabajo.
+
+---
+
+## Qué archivos nuevos deja esta sección
+
+Después de cada Knit se actualizan automáticamente:
+
+```text
+91_ANALISIS/00_GLOBAL/
+├── detalle_comparaciones_todos_contra_todos_P12.csv
+├── comparaciones_todos_contra_todos_P12.csv
+└── wilcoxon_todos_contra_todos_P12.csv
+```
+
+Por lo tanto, cuando incorporemos nuevas semillas no habrá que rehacer las comparaciones manualmente:
+
+```text
+nuevos resumen_integrado
+        |
+        v
+tabla_maestra
+        |
+        v
+Knit
+        |
+        +--> comparaciones todos contra todos
+        |
+        +--> Wilcoxon pareado
+        |
+        v
+tablas actualizadas automáticamente
+```
+
+---
+
+
+
+# Síntesis integral de resultados
+
+Esta sección reúne las métricas principales en una sola tabla para estudiar el experimento **a golpe de vista**.
+
+```{r sintesis-integral}
+tabla_sintesis <- resumen_escenario
+
+tabla_sintesis$CV_pct <- 100 *
+  tabla_sintesis$ganancia_sd /
+  tabla_sintesis$ganancia_media
+
+baseline_registros <- tabla_sintesis$registros_medios[
+  tabla_sintesis$codigo == "B100"
+][1]
+
+baseline_tiempo <- tabla_sintesis$tiempo_medio_min[
+  tabla_sintesis$codigo == "B100"
+][1]
+
+tabla_sintesis$reduccion_registros_pct <- 100 * (
+  1 - tabla_sintesis$registros_medios / baseline_registros
+)
+
+tabla_sintesis$ahorro_tiempo_pct <- 100 * (
+  1 - tabla_sintesis$tiempo_medio_min / baseline_tiempo
+)
+
+tabla_sintesis$rank_ganancia <- rank(
+  -tabla_sintesis$ganancia_media,
+  ties.method = "min"
+)
+
+tabla_sintesis$rank_estabilidad <- rank(
+  tabla_sintesis$CV_pct,
+  ties.method = "min"
+)
+
+tabla_sintesis$rank_auc <- rank(
+  -tabla_sintesis$AUC_medio,
+  ties.method = "min"
+)
+
+tabla_sintesis <- tabla_sintesis[
+  order(tabla_sintesis$rank_ganancia),
+  ,
+  drop = FALSE
+]
+
+sintesis_visible <- tabla_sintesis[
+  ,
+  c(
+    "escenario",
+    "rank_ganancia",
+    "ganancia_media",
+    "ganancia_mediana",
+    "ganancia_sd",
+    "CV_pct",
+    "rank_estabilidad",
+    "AUC_medio",
+    "rank_auc",
+    "pct_real_medio",
+    "reduccion_registros_pct",
+    "tiempo_medio_min",
+    "ahorro_tiempo_pct"
+  ),
+  drop = FALSE
+]
+
+names(sintesis_visible) <- c(
+  "Escenario",
+  "Rank ganancia",
+  "Ganancia media ↑",
+  "Mediana ↑",
+  "SD ↓",
+  "CV (%) ↓",
+  "Rank estabilidad",
+  "AUC medio ↑",
+  "Rank AUC",
+  "% real conservado",
+  "Reducción registros (%) ↑",
+  "Tiempo medio (min) ↓",
+  "Ahorro tiempo (%) ↑"
+)
+
+knitr::kable(
+  sintesis_visible,
+  digits = c(0, 0, 3, 3, 3, 1, 0, 6, 0, 2, 1, 2, 1),
+  caption = "Síntesis integral SEM1–SEM12, ordenada por ganancia media"
+)
+
+escenario_top_ganancia <- tabla_sintesis$escenario[
+  which.min(tabla_sintesis$rank_ganancia)
+]
+
+escenario_top_estabilidad <- tabla_sintesis$escenario[
+  which.min(tabla_sintesis$rank_estabilidad)
+]
+
+escenario_top_auc <- tabla_sintesis$escenario[
+  which.min(tabla_sintesis$rank_auc)
+]
+
+fila_10 <- tabla_sintesis[
+  tabla_sintesis$codigo == "U010",
+  ,
+  drop = FALSE
+]
+
+fila_100 <- tabla_sintesis[
+  tabla_sintesis$codigo == "B100",
+  ,
+  drop = FALSE
+]
+
+delta_ganancia_10_vs_100 <-
+  fila_10$ganancia_media - fila_100$ganancia_media
+
+delta_auc_10_vs_100 <-
+  fila_10$AUC_medio - fila_100$AUC_medio
+```
+
+### Lectura rápida de la síntesis
+
+- **Mayor ganancia media:** `r escenario_top_ganancia`.
+- **Mayor estabilidad relativa de ganancia (menor CV):** `r escenario_top_estabilidad`.
+- **Mayor AUC medio:** `r escenario_top_auc`.
+- En `10%`, la reducción media de registros respecto del Baseline es de aproximadamente **`r sprintf("%.1f", fila_10$reduccion_registros_pct)`%**.
+- En `10%`, el ahorro medio de tiempo es de aproximadamente **`r sprintf("%.1f", fila_10$ahorro_tiempo_pct)`%**.
+- La diferencia de ganancia media `10% - 100%` es **`r sprintf("%.3f", delta_ganancia_10_vs_100)` millones**.
+- La diferencia de AUC medio `10% - 100%` es **`r sprintf("%.6f", delta_auc_10_vs_100)`**.
+
+La lectura conjunta de estos indicadores permite separar tres ideas que no deben confundirse:
+
+```text
+GANANCIA     -> resultado económico
+ESTABILIDAD  -> cuánto cambia ese resultado entre semillas
+AUC          -> capacidad predictiva global
+RECURSOS     -> registros y tiempo requeridos
+```
+
+Por eso un escenario no se considera atractivo solamente por ocupar el primer lugar en una métrica aislada.
+
+---
+
+# Control de consistencia para la comparación estadística
+
+```{r control-wilcoxon}
+conteo_escenarios <- table(
+  tabla_maestra$escenario_codigo
+)
+
+todos_pareados <- (
+  length(conteo_escenarios) == 5 &&
+  all(conteo_escenarios == n_semillas_completas)
+)
+
+control_w <- data.frame(
+  control = c(
+    "Semillas completas disponibles",
+    "Los 5 escenarios están presentes",
+    "Cada semilla aporta los mismos 5 escenarios",
+    "Wilcoxon pareado ejecutado"
+  ),
+  resultado = c(
+    n_semillas_completas,
+    ifelse(length(conteo_escenarios) == 5, "SI", "NO"),
+    ifelse(todos_pareados, "SI", "NO"),
+    ifelse(todos_pareados, "SI", "REVISAR")
+  ),
+  stringsAsFactors = FALSE
+)
+
+knitr::kable(
+  control_w,
+  caption = "Control previo a la inferencia estadística"
+)
+```
+
+Este informe ejecuta automáticamente el **Wilcoxon pareado con las 12 semillas completas disponibles**.
+
+La comparación es **pareada por semilla**, porque los cinco escenarios fueron ejecutados sobre las mismas semillas. Si luego se incorporan nuevas semillas, el análisis se recalcula automáticamente al volver a hacer Knit.
+
+# Estado del conjunto analizado
+
+```{r cierre-automatico}
+completas <- estado_semillas$SEM[
+  estado_semillas$estado == "COMPLETA"
+]
+
+pendientes <- estado_semillas$SEM[
+  estado_semillas$estado != "COMPLETA"
+]
+
+cat("SEMILLAS COMPLETAS:\n")
+cat(
+  if (length(completas) > 0)
+    paste(completas, collapse = ", ")
+  else
+    "Ninguna",
+  "\n\n"
+)
+
+cat("SEMILLAS TODAVÍA NO COMPLETAS:\n")
+cat(
+  if (length(pendientes) > 0)
+    paste(pendientes, collapse = ", ")
+  else
+    "Ninguna",
+  "\n"
+)
+```
+
+Con cada actualización de `90_RESULTADOS` basta con volver a hacer **Knit**. No hay que reconstruir tablas a mano.
+
+# Archivos automáticos que deja este informe
+
+Cada ejecución actualiza:
+
+```text
+91_ANALISIS/
+└── 00_GLOBAL/
+    ├── estado_semillas_P12.csv
+    ├── tabla_maestra_P12.csv
+    ├── resumen_por_escenario_P12.csv
+    ├── comparacion_vs_baseline_P12.csv
+    ├── detalle_cortes_todas_semillas.csv
+    ├── detalle_comparaciones_todos_contra_todos_P12.csv
+    ├── comparaciones_todos_contra_todos_P12.csv
+    ├── wilcoxon_todos_contra_todos_P12.csv
+    └── GRAFICOS/
+        ├── 01_ganancia_por_semilla.png
+        ├── 02_auc_por_semilla.png
+        ├── 03_registros_promedio.png
+        ├── 04_tiempo_promedio.png
+        └── 05_tiempo_vs_ganancia.png
+```
+
+# Mapa mental del P12
+
+```text
+             MISMO EXPERIMENTO P12
+                      |
+          +-----------+-----------+
+          |                       |
+    semillas Victor          semillas David
+          |                       |
+          +-----------+-----------+
+                      |
+                      v
+               5 ESCENARIOS
+          100 - 40 - 10 - 5 - 1
+                      |
+                      v
+          resultado por semilla
+                      |
+       +--------------+--------------+
+       |              |              |
+    ganancia         AUC        recursos/tiempo
+       |              |              |
+       +--------------+--------------+
+                      |
+                      v
+            ESTABILIDAD DEL MODELO
+                      |
+                      v
+          COMPARACIÓN ESTADÍSTICA
+                      |
+                      v
+              CONCLUSIÓN P12
+```
+
+---
+
+## Idea fundamental
+
+No buscamos elegir el escenario con el número más alto de una corrida aislada.
+
+Buscamos determinar, mediante **varias semillas del mismo experimento**, hasta qué nivel puede reducirse la información de entrenamiento manteniendo un comportamiento suficientemente estable, y cuánto recurso computacional se ahorra a cambio.
+
+Este R Markdown funciona como **documento de análisis y control reproducible**: los scripts producen los datos; el informe los ordena, los grafica, ejecuta las comparaciones estadísticas y conserva la trazabilidad de cómo llegamos a cada conclusión.
+
+
+## Lectura con las 12 semillas integradas
+
+La evidencia conjunta de las 12 semillas muestra el siguiente patrón de trabajo:
+
+```text
+100%
+  |
+  v
+40%  -> comportamiento estable
+  |
+  v
+10%  -> todavía estable + fuerte reducción de recursos
+  |
+  v
+-----------------------------
+posible zona de quiebre
+-----------------------------
+  |
+  v
+5%   -> comienzan señales más claras de deterioro
+  |
+  v
+1%   -> mayor inestabilidad
+```
+
+La conclusión integrada del análisis actual es:
+
+> **Con las 12 semillas analizadas, el escenario 10% aparece como el compromiso más equilibrado entre ganancia, estabilidad, AUC y costo computacional. La ganancia económica no muestra diferencias estadísticamente significativas entre los escenarios en las diez comparaciones de Wilcoxon, pero el AUC se deteriora progresivamente al aumentar el undersampling y el escenario 1% presenta la mayor variabilidad relativa. Bajar de 10% a 5% o 1% reduce algo más los recursos, pero ese ahorro adicional debe evaluarse frente a la pérdida de AUC, la menor ganancia media observada en 5% y la mayor inestabilidad observada en 1%.**
+
+Esta conclusión resume el **análisis completo del conjunto SEM1..SEM12 actualmente disponible**. Si en el futuro se incorporaran nuevas semillas, el informe se recalcularía automáticamente y la conclusión debería actualizarse con esa nueva evidencia.

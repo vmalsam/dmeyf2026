@@ -1,0 +1,6 @@
+escenario_codigo,escenario,semilla,corte_maximo,ganancia_maxima,cantidad_empates
+B100,100%,480013,850,22.486,1
+U040,40%,480013,800,21.153,1
+U010,10%,480013,850,19.987,1
+U005,5%,480013,950,20.404,1
+U001,1%,480013,1100,20.237,1

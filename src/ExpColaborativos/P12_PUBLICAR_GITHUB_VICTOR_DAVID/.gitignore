@@ -1,0 +1,9 @@
+# Jupyter / R
+.ipynb_checkpoints/
+.Rhistory
+.RData
+.Rproj.user/
+
+# Temporales y exportaciones
+*.zip
+~$*

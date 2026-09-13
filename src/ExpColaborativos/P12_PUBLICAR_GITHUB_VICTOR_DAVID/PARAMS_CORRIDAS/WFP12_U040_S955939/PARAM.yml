@@ -1,0 +1,97 @@
+semilla_primigenia: 955939.0
+experimento: P12_U040_S955939
+dataset: gerencial_competencia_2026.csv.gz
+p12:
+  escenario: UND_040
+  training_pct: 0.4
+  version: RUNALL_V2
+  registros:
+    training_antes: 179449
+    positivos_antes: 1673
+    negativos_antes: 177776
+    training_despues: 73247
+    positivos_despues: 1673
+    negativos_despues: 71574
+    porcentaje_real_conservado: 40.8177
+ejecucion:
+  inicio: 2026-09-09 23:41:33
+  fin: 2026-09-09 23:51:58
+  duracion_segundos: 624.988071
+  duracion_minutos: 10.42
+  directorio: /home/ds/buckets/b1/exp/WFP12_U040_S955939
+trainingstrategy:
+  validate: 202107.0
+  training:
+  - 202106.0
+  - 202105.0
+  - 202104.0
+  - 202103.0
+  - 202102.0
+  - 202101.0
+  - 202012.0
+  - 202011.0
+  - 202010.0
+  - 202009.0
+  - 202008.0
+  - 202007.0
+  - 202006.0
+  - 202005.0
+  training_pct: 0.4
+  positivos:
+  - BAJA+1
+  - BAJA+2
+  final_train:
+  - 202107.0
+  - 202106.0
+  - 202105.0
+  - 202104.0
+  - 202103.0
+  - 202102.0
+  - 202101.0
+  - 202012.0
+  - 202011.0
+  - 202010.0
+  - 202009.0
+  - 202008.0
+  - 202007.0
+  - 202006.0
+  - 202005.0
+  future: 202109.0
+lgbm:
+  param_fijos:
+    objective: binary
+    metric: auc
+    first_metric_only: yes
+    boost_from_average: yes
+    feature_pre_filter: no
+    verbosity: -100.0
+    force_row_wise: yes
+    seed: 955939.0
+    max_bin: 31.0
+    learning_rate: 0.03
+    feature_fraction: 0.5
+    num_iterations: 2048.0
+    early_stopping_rounds: 200.0
+    num_leaves: 64.0
+    min_data_in_leaf: 128.0
+out:
+  lgbm:
+    AUC: 0.9509865
+    mejores_hiperparametros:
+      num_leaves: 256.0
+      min_data_in_leaf: 64.0
+      num_iterations: 269
+kaggle:
+  competencia: utn-2026-virtual-mgr
+  cortes:
+  - 800.0
+  - 850.0
+  - 900.0
+  - 950.0
+  - 1000.0
+  - 1050.0
+  - 1100.0
+  - 1150.0
+  - 1200.0
+  - 1250.0
+  - 1300.0
