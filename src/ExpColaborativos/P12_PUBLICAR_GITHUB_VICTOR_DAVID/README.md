@@ -20,6 +20,7 @@ El análisis integra 12 semillas (SEM1 a SEM12).
 ## Contenido del repositorio
 
 - `R/`: versión final del informe R Markdown y su HTML renderizado.
+- `NOTEBOOKS_EJEMPLO_SEM1/`: notebooks de ejecución de SEM1 (semilla 198427) para los cinco escenarios B100, U040, U010, U005 y U001.
 - `90_RESULTADOS/`: resultados consolidados necesarios para reconstruir el análisis.
 - `91_ANALISIS/00_GLOBAL/`: tablas, comparaciones, Wilcoxon y gráficos globales generados por el Rmd.
 - `PARAMS_CORRIDAS/`: `PARAM.yml` de las 60 corridas formales (12 semillas x 5 escenarios).
