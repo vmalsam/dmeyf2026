@@ -4,9 +4,9 @@
 
 Luego del trabajo de undersampling, se realizaron pruebas controladas sobre el notebook gerencial para evaluar si era posible mejorar la configuración de referencia sin basar la decisión únicamente en un pico aislado del Public Leaderboard.
 
-La metodología fue simple: **modificar una sola cosa por experimento**, mantener fijos el resto de los componentes y comparar la curva completa de cortes de Kaggle (800 a 1300), además del máximo y del promedio de los tres mejores cortes.
+La metodología fue : **modificar una sola cosa por experimento**, mantener fijos el resto de los componentes y comparar la curva completa de cortes de Kaggle (800 a 1300), además del máximo y del promedio de los tres mejores cortes.
 
-> Nota: en este workflow, `training_pct` controla el muestreo de la clase CONTINUA utilizado durante el Grid Search. No debe interpretarse automáticamente como que el entrenamiento final del modelo utiliza solamente ese porcentaje de todos los datos.
+> Nota: training_pct se usa para definir qué proporción de la clase CONTINUA entra al Grid Search. No significa que el modelo final se entrene sólo con ese porcentaje de los datos.
 
 ## Notebooks incluidos
 
